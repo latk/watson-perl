@@ -65,11 +65,11 @@ our $RCNAME = ".watsonrc";		# Change config file name
 our $TMPOUT = ".watsonresults";	# Change tmp file name
 
 # Global variables
-my @DIRS;
-my @FILES;
-my @TAGS;
-my @IGNORE;
-my @STRUCTURE;
+our @DIRS;
+our @FILES;
+our @TAGS;
+our @IGNORE;
+our @STRUCTURE;
 our $REMOTESETUP = 0;
 our $MAX_DEPTH = 0;
 our $IGNORE_RC_DIRS = 0;
@@ -83,7 +83,7 @@ our $LESSOUT;
 our $GITHUB    = Watson::Repository::GitHub->new;
 our $BITBUCKET = Watson::Repository::Bitbucket->new;
 
-my %REPOSITORIES = (
+our %REPOSITORIES = (
 	github    => $GITHUB,
 	bitbucket => $BITBUCKET,
 );
@@ -116,17 +116,23 @@ createReport();
 # Header Print
 ###########################################################
 
-# Print watson header
+sub header {
+	unshift @_, '' if @_;  # adds an empty line before further info
+	# Each line is a string or an arrayref of strings
+	# Here, we flatten them (if applicable), add a newline,
+	# and return a single string.
+	return join '', map { join '', ( ref $_ ? @$_ : $_ ), "\n" }
+		[BOLD "------------------------------"],
+		[BOLD "watson", RESET, " - ", BOLD YELLOW "inline issue manager", RESET],
+		@_,
+		[BOLD "------------------------------"],
+		'';
+}
+
 sub printHeader {
-	wprint(BOLD "------------------------------\n");
-	wprint(BOLD "watson", RESET);
-	wprint(" - ");
-	wprint(BOLD YELLOW "inline issue manager\n\n", RESET);
-	my $pwd = `pwd`;
-	wprint("Run in: $pwd");
+	chomp(my $pwd = `pwd`);
 	my $time = localtime;
-	wprint("Run @ $time\n");
-	wprint(BOLD "------------------------------\n\n");
+	wprint(header("Run in: $pwd", "Run \@: $time"), "\n");
 	return 1;
 }
 
@@ -473,16 +479,13 @@ sub parseCommandLine {
 
 			my $service = lc shift @ARGV;
 
-			if ($service eq "bitbucket") {
-				bitbucketSetup();
-			}
-			elsif ($service eq "github") {
-				$GITHUB->setup;
+			if (my $repo = $REPOSITORIES{$service}) {
+				$repo->setup;
 			}
 			elsif ($service eq "") {
 				parseConfig() if checkConfig();
 
-				if (not defined $BITBUCKET->api and not defined $GITHUB->api) {
+				if (not defined $BITBUCKET->access_token and not defined $GITHUB->access_token) {
 					say box_error("No remotes currently exist");
 					say BOLD "      Pass github or bitbucket to watson -r to add", RESET;
 					say "      That's all we support right now :(";
@@ -490,16 +493,16 @@ sub parseCommandLine {
 					cExit(1);
 				}
 
-				if (defined $BITBUCKET->api) {
+				if (defined $BITBUCKET->access_token) {
 					print box(BOLD GREEN "Bitbucket"), "\n";
-					say BOLD "   Bitbucket User :", RESET, " ", $BITBUCKET->api;
+					say BOLD "   Bitbucket User :", RESET, " ", $BITBUCKET->access_token;
 					say BOLD "   Bitbucket Repo :", RESET, " ", $BITBUCKET->repo;
 					say "";
 				}
 
-				if (defined $GITHUB->api) {
+				if (defined $GITHUB->access_token) {
 					say box(BOLD GREEN "GitHub");
-					say BOLD "   GitHub Key  :", RESET, " ", $GITHUB->api;
+					say BOLD "   GitHub Key  :", RESET, " ", $GITHUB->access_token;
 					say BOLD "   GitHub Repo :", RESET, " ", $GITHUB->repo;
 					say "";
 				}
@@ -813,8 +816,8 @@ sub parseConfig {
 
 			# Get list of issues, also checks if API key is valid
 			unless ($REMOTESETUP) {
-				getGithubIssues()    if $repository == $GITHUB;
-				getBitbucketIssues() if $repository == $BITBUCKET;
+				$GITHUB->fetch_issues if $repository == $GITHUB;
+				getBitbucketIssues()  if $repository == $BITBUCKET;
 			}
 		},
 	);
@@ -974,7 +977,7 @@ sub parseFile {
 			push @{$issueList{$ftag}}, \%issue;
 
 			# If Github valid, pass $issue to poster function
-			postGithub(\%issue) if $GITHUB->valid;
+			$GITHUB->post_issue(\%issue) if $GITHUB->valid;
 
 			# If Bitbucket valid, pass $issue to poster function
 			postBitbucket(\%issue) if $BITBUCKET->valid;
@@ -1081,7 +1084,7 @@ sub printResults {
 				# Check if issue has been closed on Github or Bitbucket, set to resolved
 				wprint(box(BOLD GREEN "Resolved on GitHub"))
 					if	$GITHUB->valid
-					and	$GITHUB->closed_issues =~ m/$issue->{md5}/;
+					and	$GITHUB->closed_issues->{body} =~ m/$issue->{md5}/;
 
 				wprint(box(BOLD GREEN "Resolved on Bitbucket"))
 					if 	$BITBUCKET->valid
@@ -1107,13 +1110,13 @@ BEGIN {
 
 	my %prototype = (
 		valid	=> 0,
-		access_token	=> undef,
-		pw	=> undef,
+		username => undef,
+		password	=> undef,
 		repo	=> undef,
 		open_issues => undef,
 		closed_issues => undef,
 	);
-	my @other_fields = qw/user_agent/;
+	my @other_fields = qw/access_token/;
 
 	sub new {
 		my ($class, %args) = @_;
@@ -1146,23 +1149,73 @@ BEGIN {
 
 	sub name { ... }
 
-	*api = \&access_token;
+	sub authorization { ... }
 
-	sub user_agent {
+	sub api  { shift->access_token(@_) }
+	sub user { shift->username(@_)     }
+	sub pw   { shift->password(@_)     }
+
+	sub access_token {
 		my $self = shift;
-		return $self->{__PACKAGE__ . '/user_agent'} = shift if @_;
-		return $self->{__PACKAGE__ . '/user_agent'} //= LWP::UserAgent->new;
+		return $self->{__PACKAGE__ . '/access_token'} = shift if @_;
+		return $self->{__PACKAGE__ . '/access_token'};
 	}
+}
 
+BEGIN {
 	package Watson::Repository::GitHub;
 	use parent -norequire, 'Watson::Repository';
 
 	sub name { "GitHub" }
+}
 
+BEGIN {
 	package Watson::Repository::Bitbucket;
 	use parent -norequire, 'Watson::Repository';
 
 	sub name { "Bitbucket" }
+}
+
+BEGIN {
+	package Watson::UserAgent;
+
+	my $instance;
+
+	sub instance {
+		my $self = shift;
+		return $instance = shift if @_;
+		require LWP::UserAgent;
+		return $instance //= LWP::UserAgent->new;
+	}
+
+	sub post {
+		my ($self, %headers) = @_;
+
+		# if the Content field is a data structure, encode it as json
+		for ($headers{Content}) {
+			$_ = JSON::encode_json($_) if ref $_;
+		}
+
+		my $response = $self->instance->post(%headers);
+		return bless $response => 'Watson::HTTP::Response';
+	}
+
+	sub get {
+		my ($self, %headers) = @_;
+		my $response = $self->instance->post(%headers);
+		return bless $response => 'Watson::HTTP::Response';
+	}
+}
+
+BEGIN {
+	package Watson::HTTP::Response;
+	use parent 'HTTP::Response';
+
+	sub json {
+		my $self = shift;
+		my $utf8_encoded_content = Encode::encode('utf8', $self->decoded_content);
+		return JSON::decode_json($utf8_encoded_content);
+	}
 }
 
 
@@ -1174,169 +1227,169 @@ BEGIN {
 sub Watson::Repository::GitHub::setup {
 	my $self = shift;
 
-	# [fixme] - Same code as header just without wprint, make modular
-	print(BOLD "------------------------------\n");
-	print(BOLD "watson", RESET);
-	print(" - ");
-	print(BOLD YELLOW "inline issue manager\n", RESET);
-	print(BOLD "------------------------------\n\n");
+	say Watson::header();
 
-	# [fixme] - Make modular status printer?
-	print box(BOLD GREEN "+");
-	print BOLD "Obtaining OAuth Token for GitHub...\n", RESET;
+	say Watson::box(BOLD GREEN "+"), BOLD "Obtaining OAuth Token for GitHub...\n", RESET;
 
 	# Parse config to make sure no previous API exists
 	Watson::parseConfig() if Watson::checkConfig();
 
 	if (defined $self->api or defined $self->repo) {
-		my $overwrite = uc prompt(
+		my $overwrite = uc Watson::prompt(
 			{ default => "N" },
-			box(BOLD RED "!"),
+			Watson::box(BOLD RED "!"),
 			BOLD "Previous GitHub API + Repo is in RC, are you sure you want to overwrite?\n", RESET,
 			"      (Y)es/(N)o: ",
 		);
-		print "\n";
+		say "";
 
 		if ($overwrite =~ /\A(?:NO?)?\z/){
-			say box_error("Not overwriting current GitHub API + repo info");
-			cExit(1);
+			say Watson::box_error("Not overwriting current GitHub API + repo info");
+			Watson::cExit(1);
 		}
 	}
 
 	say for
-		box_info("Access to your GitHub account required to make/update issues"),
+		Watson::box_info("Access to your GitHub account required to make/update issues"),
 		"      See help or README for more details on GitHub/Bitbucket access",
 		"";
 
 	# Get username, clear newlines surrounding text
 	# If blank, give error
-	my $username = prompt(BOLD "Username: ", RESET);
-	unless (length $username) {
-		say box_error("Input blank. Please enter your username!");
-		cExit(1);
-	}
+	$self->username(Watson::prompt(BOLD "Username: ", RESET, {
+		default => sub {
+			say Watson::box_error("Input blank. Please enter your username!");
+			Watson::cExit(1);
+		},
+	}));
 
-	my $password = prompt({ echo => 0 }, BOLD "Password: ", RESET);
-	unless (length $password) {
-		say box_error("Input blank. Please enter your password!");
-		cExit(1);
-	}
+	$self->password(Watson::prompt(BOLD "Password: ", RESET, {
+		echo => 0,
+		default => sub {
+			say Watson::box_error("Input blank. Please enter your password!");
+			Watson::cExit(1);
+		},
+	}));
 
 	# fetch an access token from GitHub
-	$self->fetch_authorization($username, $password);
+	$self->authorization;
 	say RESET;
 
 	# Get repo information
 	# If blank, give error
 	say for
-		box_info(BOLD "Repo information required"),
+		Watson::box_info(BOLD "Repo information required"),
 		"      Please provide owner that repo is under followed by repo name",
 		"      e.g. owner: nhmood, repo: watson (case sensitive)",
 		"      See help or README for more details on GitHub access",
 		"";
 
-	my $owner = prompt(BOLD "Owner: ", RESET);
-	unless (length $owner) {
-		say box_error("Input blank. Please enter the owner the repo is under!");
-		cExit(1);
-	}
-
-	my $repo = prompt(BOLD "Repo: ", RESET);
-	unless (length $repo) {
-		say box_error("Input blank. Please enter the repo name!");
-		cExit(1);
-	}
+	my $owner = Watson::prompt(BOLD "Owner: ", RESET, {
+		default => sub {
+			say Watson::box_error("Input blank. Please enter the owner the repo is under!");
+			Watson::cExit(1);
+		},
+	});
+	my $repo = Watson::prompt(BOLD "Repo: ", RESET, {
+		default => sub {
+			say Watson::box_error("Input blank. Please enter the repo name!");
+			Watson::cExit(1);
+		},
+	});
 	$self->repo("$owner/$repo");
 
-	# test that the repo can be accessed
 	$self->test_access;
 
-	say box_error("Creating label for watson on GitHub...\n");
+	say Watson::box_error("Creating label for watson on GitHub...\n");
+	$self->create_label("watson", "00AEEF");
 
-	# Create label for watson
-	my $response = $self->user_agent->post(
+	Configuration->replace_sections($RCNAME,
+		github     => [$self->access_token],
+		githubrepo => [$self->repo],
+	);
+
+	say for
+		Watson::box_ok("GitHub successfully setup"),
+		"      Issues will now automatically be updated on GitHub by default",
+		"      See help or README for more details on GitHub/Bitbucket access",
+		"";
+	Watson::cExit(0);
+}
+
+sub Watson::Repository::GitHub::create_label {
+	my ($self, $name, $color) = @_;
+
+	my $response = Watson::UserAgent->post(
 		sprintf('https://api.github.com/repos/%s/labels', $self->repo),
-		Authorization => 'token ' . $self->authorization_token,
-		Content => JSON::encode({
-			name => "watson",
-			color => "00AEEF",
-		}),
+		Authorization => $self->authorization,
+		Content => {
+			name => $name,
+			color => $color,
+		},
 	);
 
 	# Expected HTTP Status Code: "201 created";
 	if ($response->code == 201) {
-		say box_ok("Label successfully created");
+		say Watson::box_ok("Label successfully created");
 	}
-	elsif ($response->status_line =~ m/already_exists/i) {
-		say box_info("Label already exists");
+	elsif ($response->decoded_content =~ m/already_exists/i) {
+		say Watson::box_info("Label already exists");
 	}
 	else {
-		say box_error("Unable to access /repo/@{[ $self->repo ]} (HTTP Status @{[ $response->status_line ]})");
-		cExit(1);
+		say Watson::box_error("Unable to access /repo/@{[ $self->repo ]} (HTTP Status @{[ $response->status_line ]})");
+		Watson::cExit(1);
 	}
 	say "";
-
-	Configuration->replace_sections($RCNAME,
-		github     => $self->access_token,
-		githubrepo => $self->repo,
-	);
-
-	say for
-		box_ok("GitHub successfully setup"),
-		"      Issues will now automatically be updated on GitHub by default",
-		"      See help or README for more details on GitHub/Bitbucket access",
-		"";
-	cExit(0);
 }
 
-sub Watson::Repository::GitHub::fetch_authorization {
-	my ($self, $username, $password) = @_;
+sub Watson::Repository::GitHub::authorization {
+	my $self = shift;
 
-	my $ua = $self->user_agent;
-	my $authorization = 'Basic ' . MIME::Base64::encode("$username:$password");
-	my $response = $ua->post(
-		'https://api.github.com/authorizations',
-		Authorization => $authorization,
-		Content => JSON::encode_json({
-			scopes   => [qw[repo]],
-			note     => 'watson',
-			note_url => 'http://watson.goosecode.com',
-		}),
-	);
+	return $self->{'Watson::Repository::GitHub/authorization'} //= do {
+		my $basic_authorization = 'Basic ' . MIME::Base64::encode(
+			$self->username . ":" . $self->password,
+		);
 
-	# Expected Status Code: "201 Created"
-	if ($response->code == 201) {
+		my $response = Watson::UserAgent->post(
+			'https://api.github.com/authorizations',
+			Authorization => $basic_authorization,
+			Content => {
+				scopes   => ['repo'],
+				note     => 'watson',
+				note_url => 'http://watson.goosecode.com',
+			},
+		);
+
+		# Expected Status Code: "201 Created"
+		unless ($response->code == 201) {
+			say box_error("Unable to obtain OAuth Token");
+			cExit(1);
+		}
 		say box_ok("Obtained OAuth Token");
-	}
-	else {
-		say box_error("Unable to obtain OAuth Token");
-		cExit(1);
-	}
 
-	my $utf8_encoded_content = Encode::encode('utf8', $response->decoded_content);
-	my $dsc = JSON::parse_json($utf8_encoded_content);
-	my $access_token = $dsc->{token};
+		my $dsc = $response->json;
+		my $access_token = $dsc->{token};
 
-	unless (defined $access_token) {
-		Carp::croak "The returned JSON did not contain an access token.\n", Data::Dumper::Dump($dsc);
-	}
+		unless (defined $access_token) {
+			Carp::croak "The returned JSON did not contain an access token.\n", Data::Dumper::Dump($dsc);
+		}
 
-	$self->access_token($access_token);
-
-	return $access_token;
+		'token ' . $self->access_token($access_token);
+	};
 }
+
 
 
 sub Watson::Repository::GitHub::test_access {
 	my $self = shift;
 
-	my $response = $self->user_agent->get(
+	my $response = Watson::UserAgent->get(
 		sprintf('https://api.github.com/repos/%s/issues', $self->repo),
-		Authorization => 'token ' . $self->authorization_token,
+		Authorization => $self->authorization,
 	);
 
 	unless ($response->is_success) {
-		say box_error("Unable to access /repos/@{[ $self->repo ]} (HTTP Status @{[ $response->status_libe ]}).");
+		say box_error("Unable to access /repos/@{[ $self->repo ]} (HTTP Status @{[ $response->status_line ]}).");
 		cExit(1);
 	}
 
@@ -1349,38 +1402,47 @@ sub Watson::Repository::GitHub::test_access {
 # Github Issue Getter
 ###########################################################
 
-# Post issues to github/bitbucket
-sub getGithubIssues {
+sub Watson::Repository::GitHub::fetch_issues {
+	my $self = shift;
+
 	# Only attempt if API is specified
-	if (defined $GITHUB->api) {
-		debugPrint("Getting GitHub Issues\n");
-		# Get open tickets
-
-		my $call = sprintf "curl -s -i -H 'Authorization: token %s' 'https://api.github.com/repos/%s/issues?labels=watson&state=open'", $GITHUB->api, $GITHUB->repo;
-		$GITHUB->open_issues(`$call`);
-		debugPrint($GITHUB->open_issues);
-
-		# Check or a Status 200 OK, if not, API key might be invalid, warn user
-		# Set GITHUB_VALID to 0 so that no remote related calls will be made
-		if ($GITHUB->open_issues !~ m/200 OK/){
-			$GITHUB->valid(0);
-			print box(BOLD RED "x");
-			wprint("--> ", RESET);
-			wprint(BOLD "Unable to access remote, GitHub API may be invalid\n");
-			wprint(BOLD "          Consider running --remote (-r) option to regenerate key\n\n", RESET);
-		}
-		# Else get the closed tickets also and set GITHUB_VALID to 1
-		else {
-			$GITHUB->valid(1);
-			my $call = sprintf "curl -s -i -H 'Authorization: token %s' 'https://api.github.com/repos/%s/issues?labels=watson&state=closed'", $GITHUB->api, $GITHUB->repo;
-			$GITHUB->closed_issues(`$call`);
-			debugPrint($GITHUB->closed_issues);
-		}
-	}
-	else {
-		debugPrint("No GitHub API, ignoring issue list\n");
+	unless (defined $self->access_token) {
+		debugPrint("No GitHub access token, ignoring issue list\n");
+		return;
 	}
 
+	debugPrint("Getting GitHub Issues\n");
+
+	my $response = Watson::UserAgent->get(
+		sprintf('https://api.github.com/repos/%s/issues?labels=watson&state=open', $self->repo),
+		Authorization => $self->authorization,
+	);
+
+	unless ($response->is_success) {
+		$self->valid(0);
+		print box(BOLD RED "x");
+		wprint("--> ", RESET);
+		wprint(BOLD "Unable to access remote, GitHub API may be invalid\n");
+		wprint(BOLD "          Consider running --remote (-r) option to regenerate key\n\n", RESET);
+		return;
+	}
+
+	$self->valid(1);
+	$self->open_issues($response->json);
+	debugPrint(Data::Dumper::Dump($self->open_issues));
+
+	$response = Watson::UserAgent->get(
+		sprintf('https://api.github.com/repos/%s/issues?labels=watson&state=closed', $self->repo),
+		Authorization => $self->authorization,
+	);
+
+	unless ($response->is_success) {
+		say box_warn("Could not get closed issues, ignoring");
+		return;
+	}
+
+	$self->closed_issues($response->json);
+	debugPrint(Data::Dumper::Dump($self->closed_issues));
 }
 
 
@@ -1388,16 +1450,15 @@ sub getGithubIssues {
 # Github Issue Poster
 ###########################################################
 
-# Post issues to github/bitbucket
-sub postGithub {
-	my ($issue) = @_;
+sub Watson::Repository::GitHub::post_issue {
+	my ($self, $issue) = @_;
 	# If Github API has been registered, post on Github
-	return unless length $GITHUB->api;
+	return unless defined $self->access_token;
 
 	# Check if md5 of issue has already been posted
 	# [fixme] - if issue with same name in same file is made, won't ever get posted again :-/
-	return if $GITHUB->open_issues   =~ m/$issue->{md5}/;
-	return if $GITHUB->closed_issues =~ m/$issue->{md5}/;
+	return if $self->open_issues->{body}   =~ m/$issue->{md5}/;
+	return if $self->closed_issues->{body} =~ m/$issue->{md5}/;
 
 	# Format title and body for creating issue
 	# Title format: comment [basename of file], escape any '
@@ -1409,16 +1470,19 @@ sub postGithub {
 	debugPrint("Formatted title for GitHub Post : $title\n");
 
 	# Format comment to escape any ' so JSON will be formatted properly
-	my $body = "__filename__ : $issue->{file}\\n" .
-				"__line #__ : $issue->{linenumber}\\n" .
-				"__tag__ : $issue->{tag}\\n" .
-				"__md5__ : $issue->{md5}\\n";
-	debugPrint("Formatted body for GitHub Post : $body\n");
-
-	my $call = sprintf qq(curl -s -i -H 'Authorization: token %s' https://api.github.com/repos/%s/issues -d '{"title" : "%s", "body" : "%s", "labels" : [ "watson", "%s"]}'), $GITHUB->api, $GITHUB->repo, $title, $body, $issue->{tag};
-	debugPrint("Formatted call for GitHub Post : $call\n");
-	my $response = `$call`;
-	debugPrint($response);
+	my $response = Watson::UserAgent->post(
+		sprintf('https://api.github.com/repos/%s/issues', $self->repo),
+		Authorization => $self->authorization,
+		Content => {
+			title => $title,
+			body => join("\n" =>
+				"__filename__ : $issue->{file}",
+				"__line #__ :   $issue->{linenumber}",
+				"__tag__ :      $issue->{tag}",
+				"__md5__ :      $issue->{md5}",
+			),
+		},
+	);
 }
 
 
@@ -1430,177 +1494,107 @@ sub postGithub {
 # [todo] - Only basic http auth, get OAuth for Bitbucket
 # Bitbucket OAuth needs to redirect to some grant access page
 # Not sure how to do that with a CLI, basic HTTP auth for now
-sub bitbucketSetup {
-	# JSON Response var
-	my $js;
+
+sub Watson::Repository::Bitbucket::setup {
+	my $self = shift;
 
 	# Set remote setup to one so password isn't asked for in Bitbucket parseConfig section
 	# Crappy fix, won't need this when OAuth is implemented for Bitbucket
 	$REMOTESETUP = 1;
 
-	# [fixme] - Same code as header just without wprint, make modular
-	print(BOLD "------------------------------\n");
-	print(BOLD "watson", RESET);
-	print(" - ");
-	print(BOLD YELLOW "inline issue manager\n", RESET);
-	print(BOLD "------------------------------\n\n");
+	say Watson::header();
 
-	# [fixme] - Make modular status printer?
-	print box(BOLD GREEN "+");
-	print BOLD "Attempting to access Bitbucket...\n", RESET;;
+	say box(BOLD GREEN "+"), BOLD "Attempting to access Bitbucket...", RESET;
 
 	# Parse config to make sure no previous API exists
-	parseConfig() if checkConfig();
+	Watson::parseConfig() if Watson::checkConfig();
 
-	if (defined $BITBUCKET->api or defined $BITBUCKET->repo){
+	if (defined $self->access_token or defined $self->repo) {
 		my $overwrite = uc prompt(
 			{ default => 'N' },
 			box(BOLD RED "!"),
 			BOLD "Previous Bitbucket Repo is in RC, are you sure you want to overwrite?\n", RESET,
 			"      (Y)es/(N)o: "
 		);
-		print "\n";
+		say "";
 
 		if ($overwrite =~ /\A(?:NO?)?\z/) {
-			print box(BOLD RED "x");
-			print BOLD "Not overwriting current Bitbucket repo info\n", RESET;
+			say box_error("Not overwriting current Bitbucket repo info");
 			cExit(1);
 		}
 	}
 
-	print box(BOLD YELLOW "!");
-	print BOLD "Access to your Bitbucket account required to make/update issues\n", RESET;
-	print "      See help or README for more details on GitHub/Bitbucket access\n\n";
+	say for
+		box_info("Access to your Bitbucket account required to make/update issues"),
+		"      See help or README for more details on GitHub/Bitbucket access",
+		"",
+		join(box(BOLD RED "!"), BOLD "Bitbucket OAuth not implemented yet.", RESET),
+		"      Basic HTTP Auth in use, will request PW entry every time.",
+		"";
 
-	print box(BOLD RED "!");
-	print BOLD " Bitbucket OAuth not implemented yet.\n", RESET;
-	print "      Basic HTTP Auth in use, will request PW entry every time.\n\n";
-
-
-	# Get username, clear newlines surrounding text
-	# If blank, give error
 	my $username = prompt(BOLD "Username: ", RESET);
-	if ($username eq "") {
-		print box(BOLD RED "x");
-		print BOLD "Input blank. Please enter your username!\n", RESET;
+	unless (length $username) {
+		say box_error("Input blank. Please enter your username!");
 		cExit(1);
 	}
+	$self->access_token($username);
 
-	print "\n";
+	my $password = prompt({ echo => 0 }, BOLD "Password: ", RESET);
+	unless (length $password) {
+		say box_error("Input blank. Please enter your password!");
+		cExit(1);
+	}
 
 	# Get repo information
 	# If blank, give error
-	print box(BOLD YELLOW "!");
-	print BOLD "Repo information required\n", RESET;
-	print "      Please provide owner that repo is under followed by repo name\n";
-	print "      e.g. owner: nhmood, repo: watson (case sensitive)\n";
-	print "      See help or README for more details on GitHub access\n\n";
+	say for
+		box_info("Repo information required"),
+		"      Please provide owner that repo is under followed by repo name",
+		"      e.g. owner: nhmood, repo: watson (case sensitive)",
+		"      See help or README for more details on GitHub access",
+		"";
 
 
 	my $owner = prompt(BOLD "Owner: ", RESET);
-	if ($owner eq "") {
-		print box(BOLD RED "x");
-		print BOLD "Input blank. Please enter the owner the repo is under!\n", RESET;
+	unless (length $owner) {
+		say box_error("Input blank. Please enter the owner the repo is under!");
 		cExit(1);
 	}
 	my $repo = prompt(BOLD "Repo: ", RESET);
-	if ($repo eq "") {
-		print box(BOLD RED "x");
-		print BOLD "Input blank. Please enter the repo name!\n", RESET;
+	unless (length $repo) {
+		say box_error("Input blank. Please enter the repo name!");
 		cExit(1);
 	}
+	say "";
+	$self->repo("$owner/$repo");
 
-	print "\n";
 
-	my $call;
-	my $response;
+	my $authorization = 'Basic ' . MIME::Base64::encode("$username:$password");
+	my $response = Watson::UserAgent->get(
+		sprintf('https://bitbucket.org/api/1.0/repositories/%s', $self->repo),
+		Authorization => $authorization,
+	);
 
-	$call = sprintf "curl -s -i 'https://bitbucket.org/api/1.0/repositories/%s/%s' -u '%s'", $owner, $repo, $username;
-	print BOLD;
-	$response = `$call`;
-	print "\n", RESET;
-	# [fixme] - Pretty bad way of doing this, either grep or improve parser
-	if ($response =~ m{HTTP/1.1 200 OK}) {
-		print box(BOLD GREEN "o");
-		print BOLD "Successfully accessed remote repo with given credentials\n";
-	}
-	else {
-		print box(BOLD RED "x");
-		print BOLD "Unable to access remote repo with given credentials\n", RESET;
-		print BOLD "Check that credentials are correct and repository exists under owner\n", RESET;
-		#print "      Status: ", $js->{"Status"}, "\n";
-		cExit(1);
+	unless ($response->is_success) {
+		say box_error("Unable to access remote repo with given credentials."),
+		say BOLD "Check that credentials are correct and repository exists under owner", RESET
 	}
 
-	print "\n", RESET;
+	say box_ok("Successfully accessed remote repo with given credentials");
+	say "";
 
+	Configuration->replace_sections($RCNAME,
+		bitbucket     => [$self->access_token],
+		bitbucketrepo => [$self->repo],
+	);
 
-
-	# Check if RC exists
-	# If it exists, basically replicate it and remove [github/bitbucket tag]
-	my $nlc = 0;
-
-	if (checkConfig()){
-		debugPrint("Config exists, copying\n");
-		open my $in, "<", "$RCNAME";
-		open my $out, ">", "$RCNAME.new";
-		my $section = "";
-		while (my $line = <$in>){
-			chomp;
-			debugPrint("$line\n");
-			$section = lc $1 if $line =~ /^\[(\w+)\]/;
-
-
-			# Check for newlines
-			# If we already have 2 newlines before any actual content, skip
-			# This is just to make the RC file output nicer looking
-			if (not length $line){
-				debugPrint("Newline found\n");
-				if (++$nlc < 3){
-					debugPrint("Less than 3 newlines so far, let it print\n");
-					print $out $line;
-				}
-			}
-			# If not in bitbucket or github section, safe to copy
-			# make $remotestr lowercase and check that + repo
-			elsif ($section ne "bitbucket"  and $section ne "bitbucketrepo"){
-				debugPrint("Not in bitbucket section, copying to new rc\n");
-				print $out $line;
-				# Reset newline count
-				$nlc = 0;
-			}
-
-			debugPrint("line: $line");
-			debugPrint("nlc: $nlc\n");
-		}
-
-		# Remove old RC file and replace with new one
-		File::Copy::move("$RCNAME.new" => $RCNAME) or warn qq{Could not update the RC file "$RCNAME": $!};
-	}
-
-	# Append API token to end of file (old or new, doesn't matter now)
-	open my $file, "+>>", $RCNAME;
-
-	# Make sure there are only 2 newlines between items in RC
-	print $file "\n" for $nlc .. 1;
-
-	# Store username in bitbucket api section since we don't OAuth yet
-	say $file $_ for
-		"[bitbucket]",
-		$username,
-		"",
-		"",
-		"[bitbucketrepo]",
-		"$owner/$repo",
+	say for
+		box_ok("Bitbucket successfully setup"),
+		"      Issues will now automatically be updated on Bitbucket by default",
+		"      Use -l, --local to not update against GitHub",
+		"      See help or README for more details on GitHub/Bitbucket access",
 		"";
-	close $file;
 
-	print box(BOLD GREEN "o");
-	print BOLD "Bitbucket successfully setup\n", RESET;
-	print "      Issues will now automatically be updated on Bitbucket by default\n";
-	print "      Use -l, --local to not update against GitHub\n";
-	print "      See help or README for more details on GitHub/Bitbucket access\n";
-	print "\n";
 	cExit(0);
 }
 
@@ -1611,52 +1605,57 @@ sub bitbucketSetup {
 
 # Post issues to github/bitbucket
 sub getBitbucketIssues {
+	$BITBUCKET->fetch_issues;
+}
+sub Watson::Repository::Bitbucket::fetch_issues {
+	my $self = shift;
+
 	# Only attempt if repo is specified
-	if (defined $BITBUCKET->repo){
-		debugPrint("Getting Bitbucket Issues\n");
+	unless (defined $self->repo) {
+		debugPrint("No Bitbucket Repo, ignoring issue list\n");
+		return;
+	}
 
-		my $pw = prompt(
-			{ echo => 0 },
-			BOLD "Bitbucket password required for remote checking/posting: ", RESET,
-		);
-		print "\n";
-		if (length $pw) {
-			$BITBUCKET->pw($pw);
-		}
-		else {
-			print box(BOLD RED "x");
-			print BOLD "Input blank. Will not check/update against Bitbucket\n", RESET;
-			$BITBUCKET->pw(undef);
-			$BITBUCKET->valid(0);
-			return 1;
-		}
+	debugPrint("Getting Bitbucket Issues\n");
 
-		# Get all issues, Bitbucket differentiates between open/new so we can just look for all
-		# The open issue var is used only for preventing posting again anyways
-		# Only need closed ones to update final output, might change in Github too?
-		my $call = sprintf "curl -s -i 'https://bitbucket.org/api/1.0/repositories/%s/issues' -u '%s:%s'", $BITBUCKET->repo, $BITBUCKET->api, $pw;
-		$BITBUCKET->open_issues(`$call`);
-		debugPrint($BITBUCKET->open_issues);
-
-		# Check for a Status
-		if ($BITBUCKET->open_issues !~ m/HTTP\/1.1 200 OK/){
-			$BITBUCKET->valid(0);
-			print box(BOLD RED "x");
-			wprint("--> ", RESET);
-			wprint(BOLD "Unable to access remote, Bitbucket settings may be invalid\n");
-			wprint(BOLD "          Consider running --remote (-r) option to regenerate settings\n\n", RESET);
-		}
-		# Else get the closed tickets also and set BITBUCKET_VALID to 1
-		else {
-			$BITBUCKET->valid(1);
-			$call = sprintf "curl -s -i 'https://bitbucket.org/api/1.0/repositories/%s/issues?status=resolved' -u '%s:%s'", $BITBUCKET->repo, $BITBUCKET->api, $pw;
-
-			$BITBUCKET->closed_issues(`$call`);
-			debugPrint($BITBUCKET->closed_issues);
-		}
+	my $pw = prompt(
+		{ echo => 0 },
+		BOLD "Bitbucket password required for remote checking/posting: ", RESET,
+	);
+	say;
+	if (length $pw) {
+		$BITBUCKET->pw($pw);
 	}
 	else {
-		debugPrint("No Bitbucket Repo, ignoring issue list\n");
+		print box(BOLD RED "x");
+		print BOLD "Input blank. Will not check/update against Bitbucket\n", RESET;
+		$BITBUCKET->pw(undef);
+		$BITBUCKET->valid(0);
+		return 1;
+	}
+
+	# Get all issues, Bitbucket differentiates between open/new so we can just look for all
+	# The open issue var is used only for preventing posting again anyways
+	# Only need closed ones to update final output, might change in Github too?
+	my $call = sprintf "curl -s -i 'https://bitbucket.org/api/1.0/repositories/%s/issues' -u '%s:%s'", $BITBUCKET->repo, $BITBUCKET->api, $pw;
+	$BITBUCKET->open_issues(`$call`);
+	debugPrint($BITBUCKET->open_issues);
+
+	# Check for a Status
+	if ($BITBUCKET->open_issues !~ m/HTTP\/1.1 200 OK/){
+		$BITBUCKET->valid(0);
+		print box(BOLD RED "x");
+		wprint("--> ", RESET);
+		wprint(BOLD "Unable to access remote, Bitbucket settings may be invalid\n");
+		wprint(BOLD "          Consider running --remote (-r) option to regenerate settings\n\n", RESET);
+	}
+	# Else get the closed tickets also and set BITBUCKET_VALID to 1
+	else {
+		$BITBUCKET->valid(1);
+		$call = sprintf "curl -s -i 'https://bitbucket.org/api/1.0/repositories/%s/issues?status=resolved' -u '%s:%s'", $BITBUCKET->repo, $BITBUCKET->api, $pw;
+
+		$BITBUCKET->closed_issues(`$call`);
+		debugPrint($BITBUCKET->closed_issues);
 	}
 }
 
@@ -1734,10 +1733,18 @@ sub prompt {
 		('HASH' eq ref $_[-1]) ? %{ pop   @_ } :
 		(),
 	);
-	print {$config{out}} @_;
+
+	my $oldfh = select $config{out};
+	$| = 1;  # no buffering
+	print @_;
 	system 'stty', '-echo' unless $config{echo};
 	chomp(my $answer = readline $config{in});
 	system 'stty', 'echo'  unless $config{echo};
+	select $oldfh;
+	if (exists $config{default} and not length $answer) {
+		return $config{default}->() if ref $config{default} eq 'CODE';
+		return $config{default};
+	}
 	return $config{default} if exists $config{default} and not length $answer;
 	return $answer;
 }
