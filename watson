@@ -288,18 +288,28 @@ my $rcdefault = <<'EOF';
 [dirs]
 ./
 
-
 # Tags
 [tags]
 fix
+fixme
 review
+reviewme
 todo
-
 
 # Ignores
 [ignore]
 .git
-.swp
+*.swp
+*.class
+*.jar
+*.zip
+*.apk
+*.png
+*.jpg
+*.gif
+*.gz
+*.dex
+*.so
 EOF
 
 	debug_print($rcdefault);
@@ -702,7 +712,7 @@ sub parse_config {
 				# Regex for dirs to ignore, then push to @IGNOREDIR
 				$line =~ m{\A\s* (.+) \s*\z}x
 					or die qq{The line "$line" in a "ignore" section did not contain a valid path};
-				(my $path = $1) =~ s{(/)+\z}{};
+				(my $path = $1) =~ s{(/)+\z}{}; # remove trailing slashes
 				debug_print("ignore: $path added from rc.\n");
 				push @IGNORE, $path;
 			}
