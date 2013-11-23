@@ -968,7 +968,7 @@ sub create_report {
 
 	my $fh;
 	if (not system "which less > /dev/null 2>&1") {
-		open $fh, q(|-), 'less', '-R';
+		open $fh, q(|-), 'less', '-FXR';
 	}
 	else {
 		$fh = \*STDOUT;
