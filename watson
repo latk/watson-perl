@@ -35,7 +35,7 @@ package Watson;
 ###########################################################
 
 use strict;
-use feature qw/say/;  # implies dependency on perl 5.010
+use feature qw/say state/;  # implies dependency on perl 5.010
 use autodie; # in Core since 5.010
 use warnings;
 
@@ -49,10 +49,10 @@ $SIG{'INT'} = \&cExit;
 use Data::Dumper;
 
 # For MD5 Sum (issue posting check)
-use Digest::MD5 qw(md5_hex);
+use Digest::MD5 ();
 
 use JSON ();  # [todo] - list JSON as external dependency
-# [todo] - list LWP::UserAgent as external dependency
+# [todo] - list LWP::UserAgent as optional external dependency
 
 use File::Copy ();   # in Core since 5.002
 use MIME::Base64 (); # in Core since 5.007.003
@@ -936,11 +936,10 @@ sub parseFile {
 	return unless checkFile($file);
 
 	# Get filetype and set corresponding comment type
-	my $comment = getComment($file);
+	my $comment_regex = comment_regex($file);
 
 	# Open file and seek to beginning
 	open my $wf, "<", $file;
-	seek $wf, 0, 0;
 
 	my %issueList = (
 		filename => $file,
@@ -948,34 +947,34 @@ sub parseFile {
 	);
 
 	# Read source file line by line
-	while (my $line = <$wf>){
-	    # Find any comment line with [tag] - text (any comb of space and #)
-	    if ($line =~ /\s*(?:$comment)+\s*\[(\S+)\]\s*-\s*(.+)/) {
-			my ($ftag, $fissue) = ($1, $2);
-			debugPrint("Issue found!\n");
-			debugPrint("Tag: $ftag\n");
-			debugPrint("Issue: $fissue\n");
+	while (<$wf>){
+		next unless /$comment_regex/;
+		my ($ftag, $fissue) = ($1, $2);
+		Watson::debugPrint(
+			"Issue found!\n",
+			"Tag: $ftag\n",
+			"Issue: $fissue\n",
+		);
 
-			next unless exists $issueList{$ftag};
+		next unless exists $issueList{$ftag};
 
-			# Create hash for each issue found (for each tag)
-			my %issue = (
-				linenumber => $.,
-				comment => $fissue,
-				tag => $ftag,
-				file => $file,
-			);
+		# Create hash for each issue found (for each tag)
+		my %issue = (
+			linenumber => $.,
+			comment => $fissue,
+			tag => $ftag,
+			file => $file,
+		);
 
-			# Create hash for specific issue
-			my $digest = md5_hex(@issue{qw/tag file comment/});
-			debugPrint("$digest\n");
-			$issue{md5} = $digest;
+		# Create hash for specific issue
+		my $digest = Digest::MD5::md5_hex(@issue{qw/tag file comment/});
+		debugPrint("$digest\n");
+		$issue{md5} = $digest;
 
-			push @{$issueList{$ftag}}, \%issue;
+		push @{$issueList{$ftag}}, \%issue;
 
-			$GITHUB->post_issue(\%issue)    if $GITHUB->valid;
-			$BITBUCKET->post_issue(\%issue) if $BITBUCKET->valid;
-	    }
+		$GITHUB->post_issue(\%issue)    if $GITHUB->valid;
+		$BITBUCKET->post_issue(\%issue) if $BITBUCKET->valid;
 	}
 
 	return \%issueList;
@@ -986,33 +985,31 @@ sub parseFile {
 # Comment setter
 ###########################################################
 
-# Determine comment type from file extension
-sub getComment {
+sub comment_regex {
 	my ($file) = @_;
-	debugPrint("Getting comment type\n");
 
-	# Grab the ending extension (.something)
-	# Check to see whether it is recognized and set comment type
-	# If unrecognized, try to grab next .something extension
-	# This is to account for file.cpp.1 or file.cpp.bak, ect
+	state $watson_comment = qr/\s* \[(\S+)\] \s*[-]\s* (.+?) \s*/x;
+	state $c_comment   = qr{(?<=[/][*]) $watson_comment (?=[*][/])}x;
+	state $cpp_comment = qr{(?<=[/][/]) $watson_comment \z        }x;
+	state $sh_comment  = qr{(?<=[\#])   $watson_comment \z        }x;
 
-	my %exts;
-	$exts{$_} = qr{//} for qw/cpp cc c h c++/; # [todo] - add /* style comment
-	$exts{$_} = qr{#}  for qw/sh rb pl pm/;
+	# comments by their file endings. Each entry is a regex object
+	#   that matches the whole comment.
+	# Only single line comments are supported, this is a feature, not a bug.
+	# [todo] - document this feature.
+	state $comment = {};
+	$comment->{$_} = qr{$cpp_comment|$c_comment} for qw/cpp cc c h c++/;
+	$comment->{$_} = $sh_comment for qw/sh rb pl pm/;
 
+	# split the filename into it's various extensions
+	# Ignore “extensions” with spaces in them: probably false positives
 	my (undef, @extensions) = grep !/\s/, split /\./, $file;
-	for my $ext (reverse @extensions) {
-		# Regex for last extension
-		debugPrint("Extension: $ext\n");
-		return $exts{$ext} // next;
-	}
 
-	print box(BOLD MAGENTA "!");
-	print("--> ", RESET);
-	print("Couldn't determine filetype for $file, using # as comment\n", RESET);
+	# weigh the last extension highest
+	return $comment->{lc $_} // next for reverse @extensions;
 
-	# Didn't find any match, return error (and just use #)
-	return qr{#};
+	say Watson::box_warn("Could not determine filetype for $file, using # as comment");
+	return $sh_comment;
 }
 
 
