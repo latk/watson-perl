@@ -1331,7 +1331,7 @@ sub App::Watson::Repository::GitHub::setup {
 
 	# Get username, clear newlines surrounding text
 	# If blank, give error
-	$self->username(App::Watson::prompt(BOLD "Username: ", RESET, {
+	$self->username(lc App::Watson::prompt(BOLD "Username: ", RESET, {
 		default => sub {
 			say App::Watson::box_error("Input blank. Please enter your username!");
 			exit 1;
@@ -1359,13 +1359,13 @@ sub App::Watson::Repository::GitHub::setup {
 		"      See help or README for more details on GitHub access",
 		q();
 
-	my $owner = App::Watson::prompt(BOLD "Owner: ", RESET, {
+	my $owner = lc App::Watson::prompt(BOLD "Owner: ", RESET, {
 		default => sub {
 			say App::Watson::box_error("Input blank. Please enter the owner the repo is under!");
 			exit 1;
 		},
 	});
-	my $repo = App::Watson::prompt(BOLD "Repo: ", RESET, {
+	my $repo = lc App::Watson::prompt(BOLD "Repo: ", RESET, {
 		default => sub {
 			say App::Watson::box_error("Input blank. Please enter the repo name!");
 			exit 1;
@@ -1523,7 +1523,7 @@ sub App::Watson::Repository::Bitbucket::setup {
 		"      Basic HTTP Auth in use, will request PW entry every time.",
 		q();
 
-	my $username = App::Watson::prompt(BOLD "Username: ", RESET, {
+	my $username = lc App::Watson::prompt(BOLD "Username: ", RESET, {
 		default => sub {
 			say App::Watson::box_error("Input blank. Please enter your username!");
 			exit 1;
@@ -1551,13 +1551,13 @@ sub App::Watson::Repository::Bitbucket::setup {
 		q();
 
 
-	my $owner = App::Watson::prompt(BOLD "Owner: ", RESET, {
+	my $owner = lc App::Watson::prompt(BOLD "Owner: ", RESET, {
 		default => sub {
 			say App::Watson::box_error("Input blank. Please enter the owner the repo is under!");
 			exit 1;
 		},
 	});
-	my $repo = App::Watson::prompt(BOLD "Repo: ", RESET, {
+	my $repo = lc App::Watson::prompt(BOLD "Repo: ", RESET, {
 		default => sub {
 			say App::Watson::box_error("Input blank. Please enter the repo name!");
 			exit 1;
