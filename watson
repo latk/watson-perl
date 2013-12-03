@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 package App::Watson;
 our $VERSION = '1.3';
 	$VERSION = eval $VERSION; # PAUSE hack
