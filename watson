@@ -1,5 +1,7 @@
 #!/usr/bin/perl
 package App::Watson;
+our $VERSION = '1.3';
+	$VERSION = eval $VERSION; # PAUSE hack
 # watson - inline issue manager
 # nhmood @ [goosecode labs] | 2012
 # Copyright (c) 2012-2013 goosecode labs
@@ -39,36 +41,33 @@ use feature qw< say state >;  # implies dependency on perl 5.010
 use autodie; # in Core since 5.010
 use warnings;
 
-# For color print outs
-use Term::ANSIColor qw< :constants >;
-
 local $SIG{INT} = sub {
 	print "\n";
 	exit 1;
 };
 
-# For debugging (print data structures)
-use Data::Dumper;
+use Term::ANSIColor qw< :constants >; # in Core since 5.006
+use Data::Dumper qw<>;                # in Core since 5.005
+use Digest::MD5 qw<>;                 # in Core since 5.007.003
+use File::Copy qw<>;                  # in Core since 5.002
+use MIME::Base64 qw<>;                # in Core since 5.007.003
+use Carp qw<>;                        # in Core since 5.000
+use Encode qw<>;                      # in Core since 5.007.003
+use IO::Handle qw<>;                  # in Core since 5.003.007
+use Cwd qw<>;                         # in Core since 5.000
+use English qw< -no_match_vars >;     # in Core since 5
+use Hash::Util qw< lock_keys >;       # in Core since 5.008
+# use File::Temp qw<>;                  # in Core since 5.006.001
 
-# For MD5 Sum (issue posting check)
-use Digest::MD5 qw<>;
+use JSON::PP qw<>;                    # in Core since 5.013.009
+# use LWP::UserAgent; -- loaded on demand
 
-use JSON qw<>;  # [todo] - list JSON as external dependency
+# [todo] - list JSON::PP as external dependency
 # [todo] - list LWP::UserAgent as optional external dependency
 
-use File::Copy qw<>;   # in Core since 5.002
-use MIME::Base64 qw<>; # in Core since 5.007.003
-use Carp qw<>;         # in Core since 5.000
-use Encode qw<>;       # in Core since 5.007.003
-use IO::Handle qw<>;   # in Core since 5.003.07
-use Cwd qw<>;          # in Core since 5.000
-use English qw< -no_match_vars >; # in Core since 5
-use Hash::Util qw< lock_keys >;   # in Core since 5.008
-
 # App Config
-our $DEBUG = $ENV{WATSON_DEBUG};
+our $DEBUG  = $ENV{WATSON_DEBUG};
 our $RCNAME = ".watsonrc";		# Change config file name
-our $TMPOUT = ".watsonresults";	# Change tmp file name
 
 # Global variables
 our @DIRS;
@@ -78,9 +77,6 @@ our @IGNORE;
 our $REMOTESETUP = 0;
 our $MAX_DEPTH = 0;
 lock_keys(our %IGNORE_RC, qw<dirs files tags ignore>);
-our $HASLESS = 0;
-our $HASCURL = 0;
-our $LESSOUT;
 
 our $GITHUB    = App::Watson::Repository::GitHub->new;
 our $BITBUCKET = App::Watson::Repository::Bitbucket->new;
@@ -89,10 +85,6 @@ our %REPOSITORIES = (
 	github    => $GITHUB,
 	bitbucket => $BITBUCKET,
 );
-
-END {
-	unlink $TMPOUT if $HASLESS;
-}
 
 exit main(@ARGV);
 
@@ -103,13 +95,9 @@ exit main(@ARGV);
 #----------------------------------------------------------
 
 sub main {
-	check_less();
+	my @args = @_;
 
-	my $pwd = Cwd::cwd();
-	my $time = localtime;
-	wprint(header("Run in: $pwd", "Run \@: $time"), "\n");
-
-	parse_command_line();
+	parse_command_line(@args);
 	check_config();
 	parse_config();
 	my @issue_tree = start_scan();
@@ -125,7 +113,7 @@ sub main {
 
 
 ###########################################################
-# Header Print
+# Header
 ###########################################################
 
 sub header {
@@ -143,12 +131,11 @@ sub header {
 }
 
 ###########################################################
-# Help Print
+# Help Text
 ###########################################################
 
-# Print watson help
-sub print_help {
-	print BOLD, <<'END_HELP', RESET;
+sub help_text {
+	return join q(), BOLD, <<'END_HELP', RESET;
 Usage: watson [OPTION]...
 Running watson with no arguments will parse with settings in RC file
 If no RC file exists, default RC file will be created
@@ -171,26 +158,22 @@ Report bugs to: watson\@goosecode.com
 watson home page: <http://goosecode.com/projects/watson>
 [goosecode] labs | 2012-2013";
 END_HELP
-
-	return 1;
 }
 
 
 ###########################################################
-# Help Print
+# Version Text
 ###########################################################
 
 # Print watson help
-sub print_version {
-	print <<'END_VERSION';
+sub version_text {
+	return <<'END_VERSION';
 watson v1.3
 Copyright (c) 2012-2013 goosecode labs
 Licensed under MIT, see LICENSE for details
 
 Written by nhmood, see <http://goosecode.com/projects/watson>
 END_VERSION
-
-	return 1;
 }
 
 ###########################################################
@@ -205,40 +188,6 @@ sub debug_print {
 	return;
 }
 
-
-###########################################################
-# Output Print
-###########################################################
-
-# If system has less, dump all output to .tmp file and use less
-# If no less, just print straight to stdout
-sub wprint {
-	my @strings = @_;
-	if ($HASLESS){
-		print { $LESSOUT } @strings;
-		return 1;
-	}
-	else {
-		print @strings;
-		return 0;
-	}
-}
-
-
-###########################################################
-# Unix less Checker
-###########################################################
-
-# Check to see if system has less
-# If so, set flag and open tmp file
-sub check_less {
-	return $HASLESS if defined $HASLESS;
-	$HASLESS //= not system "which less > /dev/null 2>&1";
-	return 0 unless $HASLESS;
-	open $LESSOUT, "+>", $TMPOUT;  ## no critic (InputOutput::RequireBriefOpen)
-	return 1;
-}
-
 ###########################################################
 # Directory checker
 ###########################################################
@@ -250,13 +199,13 @@ sub check_dir {
 
 	# Error check for input
 	if (not length $dir) {
-		wprint("No directories specified.\n");
+		print("No directories specified.\n");
 		return 0;
 	}
 
 	# Check if directory can be opened
 	opendir my $tDIR, $dir or do {
-		wprint(qq{Cannot open dir "$dir": $!\n});
+		print(qq{Cannot open dir "$dir": $!\n});
 		return 0;
 	};
 
@@ -277,13 +226,13 @@ sub check_file {
 
 	# Error check for input
 	if (not length $file) {
-		wprint("No file specified.\n");
+		print("No file specified.\n");
 		return 0;
 	}
 
 	# Check if file can be opened
 	open my $tFILE, '<', $file or do {
-		wprint(qq{Could not open "$file": $!\n});
+		print(qq{Could not open "$file": $!\n});
 		return 0;
 	};
 
@@ -370,8 +319,9 @@ EOF
 
 # Parse command line arguments
 sub parse_command_line {
+	my @args = @_;
 	debug_print("[Checking CL args]\n");
-	debug_print("Total args: ", $#ARGV + 1, "\n");
+	debug_print("Total args: ", $#args + 1, "\n");
 
 	my %long_opts = (
 		"-d" => "--dirs",
@@ -390,11 +340,11 @@ sub parse_command_line {
 		my ($cb) = @_;
 
 		# Keep checking following options until another flag or end
-		while (@ARGV) {
+		while (@args) {
 			# stop when the current item is a known flag
-			last if exists $opts{$ARGV[0]};
+			last if exists $opts{$args[0]};
 
-			my $item = shift @ARGV;
+			my $item = shift @args;
 			$cb->($item);
 		}
 	};
@@ -402,28 +352,28 @@ sub parse_command_line {
 	my %flag_actions = (
 		'--help' => sub {
 			debug_print("Help flag passed\n");
-			print_help();
+			print help_text();
 			exit 0;
 		},
 		'--version' => sub {
 			debug_print("Version flag passed\n");
-			print_version();
+			print version_text();
 			exit 0;
 		},
 		'--parse-depth' => sub {
 			debug_print("Parse Depth flag passed\n");
 			# Check to make sure next param is a valid number (non-negative)
 
-			if (not @ARGV) {
-				wprint(box(BOLD RED "x"), "--parse-depth requires a numeric argument\n");
+			if (not @args) {
+				print(box(BOLD RED "x"), "--parse-depth requires a numeric argument\n");
 			}
 
-			my $depth = shift @ARGV;
+			my $depth = shift @args;
 
 			if ($depth =~ /[^0-9]/) {
-				wprint(box(BOLD MAGENTA q(!)));
-				wprint("--> ", RESET);
-				wprint("Invalid parse depth passed\n");
+				print(box(BOLD MAGENTA q(!)));
+				print("--> ", RESET);
+				print("Invalid parse depth passed\n");
 				return;
 			}
 
@@ -435,7 +385,7 @@ sub parse_command_line {
 
 			# When generating OAuth Token for github/bitbucket
 			# no other params should be passed
-			if (@ARGV > 1){
+			if (@args > 1){
 				debug_print("Not the only flag, exiting\n");
 				print box(BOLD RED "x");
 				print "Please run remote flag alone to generate GitHub/Bitbucket OAuth token\n";
@@ -443,16 +393,7 @@ sub parse_command_line {
 				exit 1;
 			}
 
-			# Can only do this if we have cURL on the system
-			if (not $HASCURL) {
-				print box(BOLD RED "x");
-				print "It looks like you don't have cURL\n";
-				print "      We currently only support remote issues if you have cURL\n";
-				print "      Make sure cURL is installed and in your PATH\n";
-				exit 1;
-			}
-
-			my $service = lc shift @ARGV;
+			my $service = lc shift @args;
 
 			if (my $repo = $REPOSITORIES{$service}) {
 				$repo->setup;
@@ -569,13 +510,13 @@ sub parse_command_line {
 			or warn "The option $long_opts{$key} is not implemented";
 	}
 
-	if (not @ARGV) {
+	if (not @args) {
 		debug_print("No command line arguments passed.\n\n");
 		return;
 	}
 
-	while (@ARGV) {
-		my $item = shift @ARGV;
+	while (@args) {
+		my $item = shift @args;
 		debug_print("Main Item: $item\n");
 
 		my $action = $flag_actions{$item}
@@ -711,7 +652,7 @@ sub parse_config {
 	debug_print("Parsing $RCNAME\n");
 
 	# Add . and .. and .git to ignorelist
-	push @IGNORE, qw< . .. *.swp .watsonrc >, $TMPOUT;
+	push @IGNORE, qw< . .. *.swp .watsonrc >;
 
 	my %actions = (
 		# If @DIRS or @FILES wasn't populated by CL args, populate from rc
@@ -837,7 +778,7 @@ sub start_scan{
 	# This will always be valid, not condition like files above
 	push @files_with_issues, map { parse_directories($_) } @DIRS;
 
-	wprint("\n");
+	print("\n");
 	return @files_with_issues;
 }
 
@@ -1002,16 +943,24 @@ sub comment_regex {
 # Format the parsed file data and output it nicely
 sub create_report {
 	my (@entries) = @_;
-	# Display output for each file parsed
-	for my $entry (@entries){
-		print_results($entry);
+
+	my $fh;
+	if (not system "which less > /dev/null 2>&1") {
+		open $fh, q(|-), 'less', '-R';
+	}
+	else {
+		$fh = \*STDOUT;
 	}
 
-	if ($HASLESS){
-		system 'less', '-R', $TMPOUT and die qq(Couldn't open the tempfile "$TMPOUT" with "less");
-		close $LESSOUT;
-		# $TMPOUT is closed in end block
+	my $pwd = Cwd::cwd();
+	my $time = localtime;
+	say { $fh } header("Run in: $pwd", "Run at: $time");
+
+	# Display output for each file parsed
+	for my $entry (@entries){
+		print_results($fh, $entry);
 	}
+
 	return 1;
 }
 
@@ -1022,7 +971,7 @@ sub create_report {
 
 # Print results from parsing all pretty and stuff
 sub print_results {
-	my ($entry) = @_;
+	my ($fh, $entry) = @_;
 	# Go through and print info for all files first
 	for my $file_report (@{$entry->{files}}) {
 
@@ -1033,11 +982,11 @@ sub print_results {
 		my $issueflag = grep { 0+@{$file_report->{$_}} } @TAGS;
 
 		if ($issueflag){
-			wprint("\n");
-			wprint(box_error(UNDERLINE $file_report->{filename}), "\n");
+			say { $fh } "";
+			say { $fh } box_error(UNDERLINE $file_report->{filename});
 		}
 		else {
-			wprint(box_ok(UNDERLINE $file_report->{filename}), "\n");
+			say { $fh } box_ok(   UNDERLINE $file_report->{filename});
 		}
 
 		# If there are no issues, don't print anything (go to next file)
@@ -1049,25 +998,22 @@ sub print_results {
 			my @issues = @{$file_report->{$tag}} or next;
 
 			# Print tag, line #, and issue
-			wprint(box(BOLD BLUE $tag), "\n");
+			say { $fh } box(BOLD BLUE $tag);
 
 			for my $issue (@issues) {
-				wprint(WHITE "  line $issue->{linenumber} - ", RESET, BOLD "$issue->{comment} ", RESET);
-
-				# If valid API key
 				# Check if issue has been closed on Github or Bitbucket, set to resolved
-				for my $repo (values %REPOSITORIES) {
-					wprint(box(BOLD GREEN "Resolved on " . $repo->name))
-						if $repo->closed_issues->contains($issue->{md5});
-				}
+				my @solved_on =
+					map  { q( ) . box(BOLD GREEN "Resolved on " . $_->name) }
+					grep { $_->closed_issues->contains($issue->{md5}) }
+					values %REPOSITORIES;
 
-				wprint("\n");
+				say { $fh } WHITE "  line $issue->{linenumber} - ", RESET, BOLD $issue->{comment}, RESET, @solved_on;
 			}
-			wprint("\n");
+			say { $fh } q();
 		}
 	}
 
-	print_results($_) for @{$entry->{dirs}};
+	print_results($fh, $_) for @{$entry->{dirs}};
 
 	return 1;
 }
@@ -1179,7 +1125,7 @@ BEGIN {
 		my ($self, %headers) = @_;
 
 		if (delete $headers{JSON} and my $data = delete $headers{Content}) {
-			$headers{Content} = JSON::encode_json($data);
+			$headers{Content} = JSON::PP::encode_json($data);
 		}
 
 		my $response = $self->instance->post(%headers);
@@ -1205,7 +1151,7 @@ BEGIN {
 	sub json {
 		my $self = shift;
 		my $utf8_encoded_content = Encode::encode('utf8', $self->decoded_content);
-		return JSON::decode_json($utf8_encoded_content);
+		return JSON::PP::decode_json($utf8_encoded_content);
 	}
 }
 
@@ -1658,10 +1604,10 @@ sub App::Watson::Repository::fetch_issues {
 
 	if (not $response->is_success) {
 		$self->valid(0);
-		print App::Watson::box(BOLD RED "x");
-		App::Watson::wprint("--> ", RESET);
-		App::Watson::wprint(BOLD "Unable to access remote, $name settings may be invalid\n");
-		App::Watson::wprint(BOLD "          Consider running --remote (-r) option to regenerate settings\n\n", RESET);
+		say for
+			join(q() => App::Watson::box(BOLD RED "x"), "--> ", RESET, BOLD "Unable to access remote, $name settings may be invalid"),
+			join(q() => BOLD, "          Consider running --remote (-r) option to regenerate settings", RESET),
+			q();
 		return;
 	}
 
