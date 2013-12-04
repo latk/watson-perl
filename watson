@@ -40,6 +40,7 @@ use strict;
 use feature qw< say state >;  # implies dependency on perl 5.010
 use autodie; # in Core since 5.010
 use warnings;
+use utf8;  # in Core since 5.006 -- define encoding of source code
 
 local $SIG{INT} = sub {
 	print "\n";
@@ -925,31 +926,52 @@ sub comment_regex {
 	my ($file) = @_;
 
 	state $watson_comment = qr/\s* \[(\S+)\] \s*[-]\s* (.+?) \s*/x;
-	state $c_comment   = qr{(?<=[/][*]) $watson_comment (?=[*][/])}x;
-	state $cpp_comment = qr{(?<=[/][/]) $watson_comment \z        }x;
-	state $sh_comment  = qr{(?<=[\#])   $watson_comment \z        }x;
+	state $c_comment   = qr{(?<=[/][*]) $watson_comment (?=\z | [*][/])}x;
+	state $cpp_comment = qr{(?<=[/][/]) $watson_comment    \z          }x;
+	state $d_comment   = qr{(?<=[/][+]) $watson_comment (?=\z | [+][/])}x;
+	state $sh_comment  = qr{(?<=[\#])   $watson_comment    \z          }x;
+	state $sql_comment = qr{(?<=[-][-]) $watson_comment    \z          }x;
+	state $ml_comment  = qr{(?=[(][*])  $watson_comment (?=\z | [*][)])}x;
+	state $lisp_comment= qr{(?<=[;])    $watson_comment    \z          }x;
+	state $sgml_comment= qr{(?<= <!--)  $watson_comment (?=\z | -->)   }x;
+	state $tex_comment = qr{(?<=[%])    $watson_comment    \z          }x;
 	state $haskell_comment =
-	                     qr{(?<= --)    $watson_comment \z        }x;
-	state $lisp_comment= qr{(?<= ;;)    $watson_comment \z        }x;
-	state $sgml_comment= qr{(?<= <!--)  $watson_comment (?=\z|-->)}x;
-	state $tex_comment = qr{(?<= %)     $watson_comment \z        }x;
+						 qr{(?=[{][-])  $watson_comment (?=\z | [-][}])}x;
 	state $fortran_comment =
-						 qr{(?<=^[C!])  $watson_comment \z        }mx;
+						 qr{(?<=^[C!])  $watson_comment    \z          }xm;
 
-	# comments by their file endings. Each entry is a regex object
-	#   that matches the whole comment.
-	# Only single line comments are supported, this is a feature, not a bug.
-	# [todo] - document this feature.
-	state $comment = {};
-	$comment->{$_} = $sh_comment      for qw< sh zsh bash rb pl pm py coffee t csf >;
-	$comment->{$_} = $haskell_comment for qw< hs >;
-	$comment->{$_} = $lisp_comment    for qw< clj >;
-	$comment->{$_} = $tex_comment     for qw< tex erl >;
-	$comment->{$_} = $sgml_comment    for qw< htm html xml >;
-	$comment->{$_} = $fortran_comment for qw< f f90 f95 f03 >;
-	$comment->{$_} = qr/$cpp_comment | $c_comment/x
-		for qw< cpp cc c h c++ m mm java class cs js php go scala >;
-	$comment->{php}= qr/$cpp_comment | $c_comment | $sh_comment/x;
+	state $comment = do {
+
+		# comments by their file endings. Each entry is a regex object
+		#   that matches the whole comment.
+		# Only single line comments are supported, this is a feature, not a bug.
+		# [todo] - document this feature.
+		my @comment_associations = (
+			[$lisp_comment,     qw< asm lisp clj scm ss >],
+			[$tex_comment,      qw< tex erl ps >],
+			[$sgml_comment,     qw< htm html xml >],
+			[$fortran_comment,  qw< f f90 f95 f03 >],
+			[$ml_comment,       qw< ml >],
+			[$sql_comment,      qw< sql lua e >],
+			[$c_comment,        qw< css >],
+			[$cpp_comment,      qw< sass scss >],
+			[qr/$sql_comment | $haskell_comment/x,         qw< hs >],
+			[qr/$cpp_comment | $c_comment | $sh_comment/x, qw< php >],
+			[qr/$cpp_comment | $c_comment | $d_comment/x,  qw< d >],
+			[qr/$cpp_comment | $c_comment/x,
+				qw< cpp cc c h c++ m mm java class cs js go scala >],
+			[$sh_comment,
+				qw< sh zsh bash rb pl pm py coffee t csf r >],
+		);
+
+		# index the comment regexes by extension
+		my %comment;
+		for my $association (@comment_associations) {
+			my ($regex, @exts) = @$association;
+			$comment{$_} = $regex for @exts;
+		}
+		\%comment;
+	};
 
 	# split the filename into it's various extensions
 	my (undef, @extensions) =  split /[.]/, $file;
