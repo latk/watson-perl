@@ -1,7 +1,7 @@
 severity  = 1
 verbose   = 4
 top       = 20
-exclude   = ControlStructures::ProhibitPostfixControls CodeLayout::ProhibitHardTabs Modules::ProhibitMultiplePackages ValuesAndExpressions::ProhibitConstantPragma RegularExpressions::RequireLineBoundaryMatching RegularExpressions::RequireDotMatchAnything ErrorHandling::RequireCarping References::ProhibitDoubleSigils ValuesAndExpressions::ProhibitInterpolationOfLiterals RegularExpressions::ProhibitEnumeratedClasses InputOutput::RequireCheckedSyscalls
+exclude   = ControlStructures::ProhibitPostfixControls Modules::ProhibitMultiplePackages ValuesAndExpressions::ProhibitConstantPragma RegularExpressions::RequireLineBoundaryMatching RegularExpressions::RequireDotMatchAnything ErrorHandling::RequireCarping References::ProhibitDoubleSigils ValuesAndExpressions::ProhibitInterpolationOfLiterals RegularExpressions::ProhibitEnumeratedClasses InputOutput::RequireCheckedSyscalls
 
 [Subroutines::RequireArgUnpacking]
 short_subroutine_statements = 1
