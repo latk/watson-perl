@@ -377,6 +377,7 @@ sub parse_command_line {
 				return;
 			}
 
+			# [reviewme] - should this be $depth + 1 instead?
 			$MAX_DEPTH = $depth;
 			debug_print("Valid parse depth: $MAX_DEPTH\n");
 		},
@@ -913,14 +914,25 @@ sub comment_regex {
 	state $c_comment   = qr{(?<=[/][*]) $watson_comment (?=[*][/])}x;
 	state $cpp_comment = qr{(?<=[/][/]) $watson_comment \z        }x;
 	state $sh_comment  = qr{(?<=[\#])   $watson_comment \z        }x;
+	state $haskell_comment =
+	                     qr{(?<= --)    $watson_comment \z        }x;
+	state $lisp_comment= qr{(?<= ;;)    $watson_comment \z        }x;
+	state $sgml_comment= qr{(?<= <!--)  $watson_comment (?=\z|-->)}x;
+	state $tex_comment = qr{(?<= %)     $watson_comment \z        }x;
 
 	# comments by their file endings. Each entry is a regex object
 	#   that matches the whole comment.
 	# Only single line comments are supported, this is a feature, not a bug.
 	# [todo] - document this feature.
 	state $comment = {};
-	$comment->{$_} = qr/$cpp_comment | $c_comment/x for qw<cpp cc c h c++>;
-	$comment->{$_} = $sh_comment for qw<sh rb pl pm>;
+	$comment->{$_} = $sh_comment      for qw< sh rb pl pm py coffee zsh sh t >;
+	$comment->{$_} = $haskell_comment for qw< hs >;
+	$comment->{$_} = $lisp_comment    for qw< clj >;
+	$comment->{$_} = $tex_comment     for qw< tex erl >;
+	$comment->{$_} = $sgml_comment    for qw< htm html xml >;
+	$comment->{$_} = qr/$cpp_comment | $c_comment/x
+		for qw<cpp cc c h c++ m mm java class cs js php go scala >;
+	$comment->{php}= qr/$cpp_comment | $c_comment | $sh_comment/x;
 
 	# split the filename into it's various extensions
 	my (undef, @extensions) =  split /[.]/, $file;
@@ -1428,7 +1440,6 @@ sub App::Watson::Repository::GitHub::authorization {
 	};
 }
 
-
 sub App::Watson::Repository::GitHub::test_access {
 	my $self = shift;
 
@@ -1475,7 +1486,7 @@ sub App::Watson::Repository::Bitbucket::setup {
 			{ default => q(N) },
 			App::Watson::box(BOLD RED q(!)),
 			BOLD "Previous Bitbucket Repo is in RC, are you sure you want to overwrite?\n", RESET,
-	"      (Y)es/(N)o: "
+			"      (Y)es/(N)o: "
 		);
 		say q();
 
@@ -1545,11 +1556,11 @@ sub App::Watson::Repository::Bitbucket::setup {
 	);
 
 	say for
-	App::Watson::box_ok("Bitbucket successfully setup"),
-	"      Issues will now automatically be updated on Bitbucket by default",
-	"      Use -l, --local to not update against GitHub",
-	"      See help or README for more details on GitHub/Bitbucket access",
-	q();
+		App::Watson::box_ok("Bitbucket successfully setup"),
+		"      Issues will now automatically be updated on Bitbucket by default",
+		"      Use -l, --local to not update against GitHub",
+		"      See help or README for more details on GitHub/Bitbucket access",
+		q();
 
 	exit 0;
 }
@@ -1853,5 +1864,3 @@ sub prompt {
 	return $config{default} if exists $config{default} and not length $answer;
 	return $answer;
 }
-
-# kate: space-indent off; indent-width 4; mixedindent off; indent-mode cstyle;
