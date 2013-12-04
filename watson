@@ -934,7 +934,7 @@ sub comment_regex {
 	state $sgml_comment= qr{(?<= <!--)  $watson_comment (?=\z|-->)}x;
 	state $tex_comment = qr{(?<= %)     $watson_comment \z        }x;
 	state $fortran_comment =
-						 qr{(?<=^[C][|][!]) $watson_comment \z    }mx;
+						 qr{(?<=^[C!])  $watson_comment \z        }mx;
 
 	# comments by their file endings. Each entry is a regex object
 	#   that matches the whole comment.
