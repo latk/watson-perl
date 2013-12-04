@@ -553,14 +553,15 @@ BEGIN {
 		my %sections;
 
 		my $section;
-		open my $fh, "<", $filename;
-		while (<$fh>) {
+		open my $rc, "<", $filename;
+		while (<$rc>) {
 			chomp;
 			App::Watson::debug_print("# line $INPUT_LINE_NUMBER: $_\n");
 
-			next if !/\S/;
-			next if /\A\s*#/;
+			next if !/\S/;    # Skip empty lines
+			next if /\A\s*#/; # Ignore full line comments
 
+			# Regex to fond [section], then store into $section
 			if (/\A \[( \w+ )\] \s*\z/x) {
 				$section = lc $1;
 				App::Watson::debug_print("# recognized as section [$section]\n");
@@ -573,7 +574,7 @@ BEGIN {
 			push @{ $sections{$section} }, $_;
 			App::Watson::debug_print("# added to [$section]\n");
 		}
-		close $fh;
+		close $rc;
 
 		return bless {
 			sections => \%sections,
@@ -693,7 +694,7 @@ sub parse_config {
 
 			for my $line (@_) {
 				# Regex for tags, then push to @TAGS
-				$line =~ /^\A\s* (\w+(?: [|] [0-9])?) \s*\z/x
+				$line =~ /^\A\s* (\w+(?: [|] [0-9] )?) \s* (?: \#*.* )? \z/x
 					or die qq{The line "$line" in a "tags" section did not contain a valid tag};
 				my $tag = $1;
 				debug_print("tags: $tag added from rc.\n");
@@ -875,6 +876,9 @@ sub parse_file {
 	# Error check for input
 	return unless check_file($file);
 
+	# Return unless the input is a text file
+	return unless ( -T $file );
+
 	# Get filetype and set corresponding comment type
 	my $comment_regex = comment_regex($file);
 
@@ -929,25 +933,30 @@ sub comment_regex {
 	state $lisp_comment= qr{(?<= ;;)    $watson_comment \z        }x;
 	state $sgml_comment= qr{(?<= <!--)  $watson_comment (?=\z|-->)}x;
 	state $tex_comment = qr{(?<= %)     $watson_comment \z        }x;
+	state $fortran_comment =
+						 qr{(?<=^[C!])  $watson_comment \z        }mx;
 
 	# comments by their file endings. Each entry is a regex object
 	#   that matches the whole comment.
 	# Only single line comments are supported, this is a feature, not a bug.
 	# [todo] - document this feature.
 	state $comment = {};
-	$comment->{$_} = $sh_comment      for qw< sh rb pl pm py coffee zsh sh t >;
+	$comment->{$_} = $sh_comment      for qw< sh zsh bash rb pl pm py coffee t csf >;
 	$comment->{$_} = $haskell_comment for qw< hs >;
 	$comment->{$_} = $lisp_comment    for qw< clj >;
 	$comment->{$_} = $tex_comment     for qw< tex erl >;
 	$comment->{$_} = $sgml_comment    for qw< htm html xml >;
+	$comment->{$_} = $fortran_comment for qw< f f90 f95 f03 >;
 	$comment->{$_} = qr/$cpp_comment | $c_comment/x
-		for qw<cpp cc c h c++ m mm java class cs js php go scala >;
+		for qw< cpp cc c h c++ m mm java class cs js php go scala >;
 	$comment->{php}= qr/$cpp_comment | $c_comment | $sh_comment/x;
 
 	# split the filename into it's various extensions
 	my (undef, @extensions) =  split /[.]/, $file;
 
 	# weigh the last extension highest
+	# If unrecognized, try to grab next .something extension
+	# This is to account for file.cpp.1 or file.cpp.bak, ect
 	# Ignore “extensions” with spaces in them: probably false positives
 	for (grep { not /\s/ } reverse @extensions) {
 		return $comment->{lc $_} // next;
