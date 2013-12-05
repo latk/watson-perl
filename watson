@@ -6,9 +6,9 @@
 # See the file LICENSE for copying permission
 
 use strict;
+use warnings;
 use feature qw< say state >;  # implies dependency on perl 5.010
 use autodie; # in Core since 5.010
-use warnings;
 use utf8;  # in Core since 5.006 -- define encoding of source code
 
 package App::Watson;
@@ -62,12 +62,16 @@ use IO::Handle      qw<>;                 # in Core since 5.003.007
 use Cwd             qw<>;                 # in Core since 5.000
 use English         qw< -no_match_vars >; # in Core since 5
 use Hash::Util      qw< lock_keys >;      # in Core since 5.008
-
+use FindBin         qw<>;                 # in Core since 5.003.007
+use lib "$FindBin::RealBin/lib";       # in Core since 5.001
 use JSON::PP        qw<>;                 # in Core since 5.013.009
 # use LWP::UserAgent; -- loaded on demand
 
-# [todo] - list JSON::PP as external dependency
-# [todo] - list LWP::UserAgent as optional external dependency
+use App::Watson::UI         qw<>;
+use App::Watson::Issue      qw<>;
+use App::Watson::IssueList  qw<>;
+use App::Watson::Repository qw<>;
+use App::Watson::UserAgent  qw<>;
 
 # App Config
 our $DEBUG  = $ENV{WATSON_DEBUG};
@@ -1023,7 +1027,7 @@ sub create_report {
         say { $fh } $_ for directory_report($entry, $tags);
     }
 
-    close $fh if fd($fh) != fd(\*STDOUT);
+    close $fh if fileno($fh) != fileno(STDOUT);
 
     return 1;
 }
@@ -1088,72 +1092,6 @@ sub file_report {
 #####################
 
 BEGIN {
-    package App::Watson::Repository;
-
-    my %prototype = (
-        valid         => 0,
-        username      => undef,
-        password      => undef,
-        repo          => undef,
-        open_issues   => undef,
-        closed_issues => undef,
-    );
-    my @other_fields = qw< access_token >;
-
-    my %lazy_init = (
-        open_issues   => sub { App::Watson::IssueList->new },
-        closed_issues => sub { App::Watson::IssueList->new },
-    );
-
-    sub new {
-        my ($class, %args) = @_;
-
-        if ($class eq __PACKAGE__) {
-            Carp::croak "This class is abstract and should not be instantiated";
-        }
-
-        my $self = {%prototype};
-        for my $field (grep { exists $args{$_} } @other_fields, keys %prototype) {
-            $self->{__PACKAGE__ . q(/) . $field} = delete $args{$field};
-        }
-
-        if (keys %args) {
-            Carp::croak "Unknown constructor arguments [@{[join ', ', keys %args]}]";
-        }
-
-        return bless $self => $class;
-    }
-
-    # a bit of meta-programming: writing the accessors
-    for my $field (keys %prototype, @other_fields) {
-        my $init = $lazy_init{$field};
-        my $full_field_name = __PACKAGE__ . q(/) . $field;
-
-        no strict 'refs';  ## no critic (TestingAndDebugging::ProhibitNoStrict)
-
-        *{ $field } = sub {
-            my $self = shift;
-            return $self->{$full_field_name}   = shift          if @_;
-            return $self->{$full_field_name} //= $self->$init() if $init;
-            return $self->{$full_field_name};
-        }
-    }
-
-    sub name { ... }
-
-    sub authorization { ... }
-
-    sub api {
-        return shift->access_token(@_);
-    }
-
-    sub user {
-        return shift->username(@_);
-    }
-
-    sub pw {
-        return shift->password(@_);
-    }
 }
 
 BEGIN {
@@ -1171,159 +1109,6 @@ BEGIN {
 
     sub name {
         return "Bitbucket";
-    }
-}
-
-BEGIN {
-    package App::Watson::UserAgent;
-
-    my $instance;
-
-    sub instance {
-        my ($self, @other_args) = @_;
-        return $instance = shift @other_args if @other_args;
-        require LWP::UserAgent;
-        return $instance //= LWP::UserAgent->new;
-    }
-
-    sub post {
-        my ($self, %headers) = @_;
-
-        if (delete $headers{JSON} and my $data = delete $headers{Content}) {
-            $headers{Content} = JSON::PP::encode_json($data);
-        }
-
-        my $response = $self->instance->post(%headers);
-        return bless $response => 'App::Watson::HTTP::Response';
-    }
-
-    sub get {
-        my ($self, %headers) = @_;
-
-        my $response = $self->instance->get(%headers);
-        return bless $response => 'App::Watson::HTTP::Response';
-    }
-
-    use constant {
-        HTTP_CREATED => 201,
-    };
-}
-
-BEGIN {
-    package App::Watson::HTTP::Response;
-    use parent 'HTTP::Response';
-
-    sub json {
-        my $self = shift;
-        my $utf8_encoded_content = Encode::encode('utf8', $self->decoded_content);
-        return JSON::PP::decode_json($utf8_encoded_content);
-    }
-}
-
-BEGIN {
-    package App::Watson::Issue;
-
-    my @required_fields = qw< path line tag comment >;
-    my @private_fields  = qw< md5 >;
-
-    sub new {
-        my ($class, %args) = @_;
-        my $self = {};
-
-        for my $field (@required_fields) {
-            if (not exists $args{$field}) {
-                Carp::croak qq/Constructor argument "$field" is mandatory/;
-            }
-            $self->{__PACKAGE__ . q(/) . $field} = delete $args{$field};
-        }
-
-        if (keys %args) {
-            my $keys = join ", ", sort keys %args;
-            Carp::croak "Unknown constructor arguments [$keys]";
-        }
-
-        bless $self => $class;
-
-        $self->{__PACKAGE__ . '/md5'} =
-            Digest::MD5::md5_hex($self->tag, $self->file, $self->comment);
-
-        return $self;
-    }
-
-    for my $field (@required_fields, @private_fields) {
-        no strict 'refs';  ## no critic (TestingAndDebugging::ProhibitNoStrict)
-        *{ __PACKAGE__ . q(::) . $field } = sub {
-            my $self = shift;
-            return $self->{__PACKAGE__ . q(/) . $field};
-        }
-    }
-
-    sub file {
-        my $self = shift;
-
-        (my $file = $self->path) =~ s{\A.*/}{};
-        return $file;
-    }
-
-    sub post {
-        my $self = shift;
-
-        $_->post_issue($self) for grep { $_->valid } values %REPOSITORIES;
-
-        return;
-    }
-
-    sub formatted_data {
-        my $self = shift;
-
-        return join q(), map { "$_\n" }
-            "__filename__ : " . $self->path,
-            "__line #__ : "   . $self->line,
-            "__tag__ : "      . $self->tag,
-            "__md5__ : "      . $self->md5;
-    }
-
-    sub title {
-        my $self = shift;
-
-        return sprintf "%s [%s]", $self->comment, $self->file;
-    }
-
-    sub as_hash {
-        my ($self) = @_;
-        return +{
-            linenumber => $self->line,
-            comment    => $self->comment,
-            tag        => $self->tag,
-            file       => $self->file,
-            md5        => $self->md5,
-        };
-    }
-
-    sub reconstruct {
-        my ($class, $title, $formatted_data) = @_;
-        $title =~ /\A\s* (.+) \s* \[([^\]]+)\] \s*\z/x or return;
-        my $comment= $1;
-        my $file   = $2;
-        $formatted_data =~ /^\s*__filename__\s:\s+(.+           ) \s*$/mx or return;
-        my $path   = $1;
-        $formatted_data =~ /^\s*__line \#__ \s:\s+([0-9]+       ) \s*$/mx or return;
-        my $line   = $1;
-        $formatted_data =~ /^\s*__tag__     \s:\s+(\w+          ) \s*$/mx or return;
-        my $tag    = $1;
-        $formatted_data =~ /^\s*__md5__     \s:\s+([[:xdigit:]]+) \s*$/mx or return;
-        my $digest = $1;
-
-        my $instance = (ref $class || $class)->new(
-            path => $path,
-            line => $line,
-            comment => $comment,
-            tag => $tag,
-        );
-
-        $instance->{'App::Watson::Issue/md5'} = $digest;
-
-        return $instance;
     }
 }
 
@@ -1776,35 +1561,6 @@ sub App::Watson::Repository::Bitbucket::fetch_issues_extract_issues {
         @{ $data->{issues} };
 }
 
-BEGIN {
-    package App::Watson::IssueList;
-
-    sub new {
-        my ($class) = @_;
-        return bless {
-            __PACKAGE__ . '/contains' => {},
-            __PACKAGE__ . '/all' => [],
-        } => $class;
-    }
-
-    sub add {
-        my ($self, $issue) = @_;
-        push @{ $self->{__PACKAGE__ . '/all'} }, $issue;
-        $self->{__PACKAGE__ . '/contains'}->{$issue->md5} = $issue;
-        return $self;
-    }
-
-    sub all {
-        my $self = shift;
-        return @{ $self->{__PACKAGE__ . '/all'} };
-    }
-
-    sub contains {
-        my ($self, $digest) = @_;
-        return $self->{__PACKAGE__ . '/contains'}->{$digest};
-    }
-}
-
 
 ##########################
 # Repository Issue Poster
@@ -1871,127 +1627,4 @@ sub App::Watson::Repository::GitHub::post_issue_headers {
 sub App::Watson::Repository::Bitbucket::post_issue_url {
     my ($self) = @_;
     return sprintf 'https://api.github.com/repos/%s/issues', $self->repo;
-}
-
-######################
-# UserInterface class
-######################
-
-BEGIN {
-    package App::Watson::UI;
-    use Term::ANSIColor qw< :constants >;
-
-    sub new {
-        die "Sorry, this is a singleton class";
-    }
-
-    sub prompt {
-        my ($self, $prompt, %kw_args) = @_;
-
-        # printflush prints the data, then flushes immediately
-        STDOUT->printflush(BOLD, _flatten($prompt), q( ), RESET);
-
-        system 'stty', '-echo' if $kw_args{silent};
-        chomp(my $answer = <STDIN>);
-        system 'stty', 'echo'  if $kw_args{silent};
-
-        if (exists $kw_args{default} and not length $answer) {
-            my $default = $kw_args{default};
-            return $default->() if ref $default eq 'CODE';
-            return $default;
-        }
-
-        return $answer;
-    }
-
-    sub prompt_yn {
-        my ($self, %kw_args) = @_;
-        my $result = uc $self->prompt('(Y)es/(N)o:', %kw_args);
-        return !scalar($result =~ /\A [N][O]? \z/x);
-    }
-
-    sub tag {
-        my ($self, @args) = @_;
-        Carp::croak "\@args is empty" if not @args;
-        Carp::croak "\$args[0] is undef" if not defined $args[0];
-        return join q(), BOLD, "[ ", RESET, @args, RESET, BOLD, " ] ", RESET;
-    }
-
-    sub generic_message {
-        my ($self, $tag, $message, @details) = @_;
-        my $box = $self->tag(_flatten($tag));
-        my $headline = join q() => BOLD, _flatten($message), RESET;
-        return $box . join qq(\n) => $headline, _flatten(@details);
-    }
-
-    sub success {
-        my ($self, $message, @details) = @_;
-        return $self->generic_message([BOLD GREEN, 'o'],   $message, @details);
-    }
-
-    sub info {
-        my ($self, $message, @details) = @_;
-        return $self->generic_message([BOLD GREEN, 'i'],   $message, @details);
-    }
-
-    sub warning {
-        my ($self, $message, @details) = @_;
-        return $self->generic_message([BOLD MAGENTA, '!'], $message, @details);
-    }
-
-    sub error {
-        my ($self, $message, @details) = @_;
-        return $self->generic_message([BOLD RED, 'x'],     $message, @details);
-    }
-
-    sub header {
-        my ($self, @info) = @_;
-        unshift @info, q() if @info;  # adds an empty line before further info
-        # Each line is a string or an arrayref of strings
-        # Here, we flatten them (if applicable), add a newline,
-        # and return a single string.
-        return join qq(\n),
-            map { _flatten($_) }
-            [BOLD "------------------------------"],
-            [BOLD "watson", RESET, " - ", BOLD YELLOW "inline issue manager", RESET],
-            @info,
-            [BOLD "------------------------------"],
-            q();
-    }
-
-    sub details {
-        my ($self, @kv_pairs) = @_;
-        for (@kv_pairs) {
-            my ($k, @v) = _flatten(@$_);
-            $_ = [qq($k:) => @v];
-        }
-        return $self->display_kv(@kv_pairs);
-    }
-
-    sub display_kv {
-        my ($self, @kv_pairs) = @_;
-
-        my $max_key_length = 0;
-        for my $pair (@kv_pairs) {
-            my ($key) = @$pair;
-            if ($max_key_length < length $key) {
-                $max_key_length = length $key;
-            }
-        }
-
-        # cap the key length to 80/3 = 26
-        $max_key_length = int(80/3) if $max_key_length > int(80/3);
-
-        my $str = q();
-        for my $pair (@kv_pairs) {
-            my ($key, @values) = @$pair;
-            my $aligned_key = sprintf q(%-*s), $max_key_length, $key;
-            $str .= join(q() => BOLD, $aligned_key, RESET, q( ), @values, qq(\n));
-        }
-        return $str;
-    }
-
-    sub _flatten {
-        return map { ref $_ ? (join q() => @$_) : $_ } @_;
-    }
 }

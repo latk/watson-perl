@@ -32,7 +32,7 @@ watson-perl should run on perl 5.10 or later. The following installation procedu
 
  5. Put `watson` into your `$PATH`, e.g. by linking from `/usr/bin`:
 
-        $ sudo ln -s watson /usr/bin
+        $ sudo ln -s "`pwd`watson" /usr/bin
 
 To update such an installation, perform `$ git pull` inside the directory.
 

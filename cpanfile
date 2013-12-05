@@ -4,6 +4,7 @@ requires "version"  => "0";
 requires "warnings" => "0";
 requires "feature"  => "0";
 requires "utf8"     => "0";
+requires "lib"      => "0";
 
 requires "Term::ANSIColor"  => "0";
 requires "Data::Dumper"     => "0";
@@ -18,6 +19,8 @@ requires "English"          => "0";
 requires "Hash::Util"       => "0";
 requires "JSON::PP"         => "0";
 requires "LWP::UserAgent"   => "0";
+requires "FindBin"          => "0";
+requires "HTTP::Response"   => "0";
 
 on 'test' => sub {
   requires "Test::More" => "0";
