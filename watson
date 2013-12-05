@@ -1,13 +1,17 @@
 #!/usr/bin/env perl
-package App::Watson;
-our $VERSION = '1.3';
-    $VERSION = eval $VERSION; # PAUSE hack
 # watson - inline issue manager
 # nhmood @ [goosecode labs] | 2012
 # Copyright (c) 2012-2013 goosecode labs
 # This content is licensed under the MIT License
 # See the file LICENSE for copying permission
 
+package App::Watson;
+our $VERSION = '1.3';
+    $VERSION = eval $VERSION; # PAUSE hack
+
+our $COPYRIGHT = '2012-2013 goosecode labs';
+our $PROJECT_HOMEPAGE = 'http://goosecode.com/projects/watson';
+our $ISSUE_TRACKER    = 'https://github.com/nhmood/watson-perl/issues';
 
 # [todo] - add priority listing for tags and todo
 # [todo] - generate .html file with report
@@ -31,6 +35,7 @@ our $VERSION = '1.3';
 # [todo] - change github issue checks to -d instead of issue?key=val
 # [todo] - add remote / local options and necessary logic
 # [todo] - replace open/closed issue var with just all and closed?
+# [todo] - implement column wrapping with Text::Wrap
 
 ###########################################################
 # Global parameters
@@ -88,12 +93,6 @@ our %REPOSITORIES = (
 
 exit main(@ARGV);
 
-#----------------------------------------------------------
-###########################################################
-# Main Program
-###########################################################
-#----------------------------------------------------------
-
 sub main {
     my @args = @_;
 
@@ -103,77 +102,6 @@ sub main {
     my @issue_tree = start_scan();
     create_report(@issue_tree);
     return 0;
-}
-
-#----------------------------------------------------------
-###########################################################
-# Functions
-###########################################################
-#----------------------------------------------------------
-
-
-###########################################################
-# Header
-###########################################################
-
-sub header {
-    my @info = @_;
-    unshift @info, q() if @info;  # adds an empty line before further info
-    # Each line is a string or an arrayref of strings
-    # Here, we flatten them (if applicable), add a newline,
-    # and return a single string.
-    return join q(), map { join q(), ( ref $_ ? @$_ : $_ ), "\n" }
-        [BOLD "------------------------------"],
-        [BOLD "watson", RESET, " - ", BOLD YELLOW "inline issue manager", RESET],
-        @info,
-        [BOLD "------------------------------"],
-        q();
-}
-
-###########################################################
-# Help Text
-###########################################################
-
-sub help_text {
-    return join q(), BOLD, <<'END_HELP', RESET;
-Usage: watson [OPTION]...
-Running watson with no arguments will parse with settings in RC file
-If no RC file exists, default RC file will be created
-
-   -d, --dirs         list of directories to search in
-   -f, --files        list of files to search in
-   -h, --help         say help
-   -i, --ignore       list of files, directories, or types to ignore
-   -p, --parse-depth  depth to recursively parse directories
-   -r, --remote       list / create tokens for Bitbucket/Github
-   -t, --tags         list of tags to search for
-   -v, --version      say watson version and info
-
-Any number of files, tags, dirs, and ignores can be listed after flag
-Ignored files should be space separated
-To use *.filetype identifier, encapsulate in \"\" to avoid shell substitutions
-
-
-Report bugs to: watson\@goosecode.com
-watson home page: <http://goosecode.com/projects/watson>
-[goosecode] labs | 2012-2013";
-END_HELP
-}
-
-
-###########################################################
-# Version Text
-###########################################################
-
-# Print watson help
-sub version_text {
-    return <<'END_VERSION';
-watson v1.3
-Copyright (c) 2012-2013 goosecode labs
-Licensed under MIT, see LICENSE for details
-
-Written by nhmood, see <http://goosecode.com/projects/watson>
-END_VERSION
 }
 
 ###########################################################
@@ -329,213 +257,302 @@ EOF
 
 # Parse command line arguments
 sub parse_command_line {
-    my @args = @_;
-    debug_print("[Checking CL args]\n");
-    debug_print("Total args: ", $#args + 1, "\n");
+    return App::Watson::CommandLine::parse(@_);
+}
 
-    my %long_opts = (
-        "-d" => "--dirs",
-        "-f" => "--files",
-        "-h" => "--help",
-        "-v" => "--version",
-        "-t" => "--tags",
-        "-p" => "--parse-depth",
-        "-i" => "--ignore",
-        "-r" => "--remote",
+BEGIN {
+    package App::Watson::CommandLine;
+    use Term::ANSIColor qw< :constants >;
+
+    my @options = (
+        {
+            flag    => [qw< -d --dirs >],
+            action  => \&dirs,
+            doc     => 'list of directories to search in',
+            arg     => '<dir>...'
+        },
+        {
+            flag    => [qw< -f --files >],
+            action  => \&files,
+            doc     => 'list of files to search in',
+            arg     => '<file>...'
+        },
+        {
+            flag    => [qw< -h --help >],
+            action  => \&help,
+            doc     => 'output the help message',
+        },
+        {
+            flag    => [qw< -i --ignore >],
+            action  => \&ignore,
+            doc     => 'list of files, directories, or types to ignore',
+            arg     => '<pattern>...',
+        },
+        {
+            flag    => [qw< -p --parse-depth >],
+            action  => \&parse_depth,
+            doc     => 'depth to recursively parse directories',
+        },
+        {
+            flag    => [qw< -r --remote >],
+            action  => \&remote,
+            doc     => 'list / create tokens for Bitbucket/Github',
+        },
+        {
+            flag    => [qw< -t --tags >],
+            action  => \&tags,
+            doc     => 'list of tags to search for',
+            arg     => '<tag>...'
+        },
+        {
+            flag    => [qw< -v --version >],
+            action  => \&version,
+            doc     => 'say watson version and info',
+        },
     );
-    my %opts;
-    @opts{%long_opts} = ();
 
-    my $slurp_items = sub {
-        my ($cb) = @_;
+    sub parse {
+        my @args = @_;
+        App::Watson::debug_print("[Checking CL args]\n");
+        App::Watson::debug_print("Total args: ", $#args + 1, "\n");
+
+        my %flag_actions;
+        for my $option (@options) {
+            $flag_actions{$_} = $option->{action} for @{ $option->{flag} };
+        }
+
+        if (not @args) {
+            App::Watson::debug_print("No command line arguments passed.\n\n");
+            return;
+        }
+
+        while (@args) {
+            my $item = shift @args;
+            App::Watson::debug_print("Main Item: $item\n");
+
+            my $action = $flag_actions{$item}
+                or die qq{Can't understand command line argument "$item"};
+            $action->(\@args, \%flag_actions);
+        }
+
+        return 1;
+    }
+
+    sub slurp_items {
+        my ($args, $opts, $cb) = @_;
+
+        my @results;
 
         # Keep checking following options until another flag or end
-        while (@args) {
+        while (@$args) {
             # stop when the current item is a known flag
-            last if exists $opts{$args[0]};
+            last if exists $opts->{$args->[0]};
 
-            my $item = shift @args;
-            $cb->($item);
+            my $item = shift @$args;
+            push @results, $cb->($item);
         }
-    };
 
-    my %flag_actions = (
-        '--help' => sub {
-            debug_print("Help flag passed\n");
-            print help_text();
-            exit 0;
-        },
-        '--version' => sub {
-            debug_print("Version flag passed\n");
-            print version_text();
-            exit 0;
-        },
-        '--parse-depth' => sub {
-            debug_print("Parse Depth flag passed\n");
-            # Check to make sure next param is a valid number (non-negative)
+        return @results;
+    }
 
-            if (not @args) {
-                print(box(BOLD RED "x"), "--parse-depth requires a numeric argument\n");
-            }
+    sub help {
+        App::Watson::debug_print("Help flag passed\n");
 
-            my $depth = shift @args;
+        # go through all options and pre-format them
+        my @commands;
+        for my $option (@options) {
+            my ($flags, $arg, $docs) = @$option{qw< flag arg doc >};
+            my $flag_description = sprintf q(  {%s}), join q(|) => @$flags;
+            $flag_description .= qq( $arg) if defined $arg;
 
-            if ($depth =~ /[^0-9]/) {
-                print(box(BOLD MAGENTA q(!)));
-                print("--> ", RESET);
-                print("Invalid parse depth passed\n");
-                return;
-            }
+            push @commands, [$flag_description, $docs];
+        }
 
-            # [reviewme] - should this be $depth + 1 instead?
-            $MAX_DEPTH = $depth;
-            debug_print("Valid parse depth: $MAX_DEPTH\n");
-        },
-        '--remote' => sub {
-            debug_print("Remote Flag passed\n");
+        say for
+            BOLD . "Usage: $0 [OPTIONS...]" . RESET,
+            '',
+            'Running watson with no arguments will take settings from the RC file. If no RC file exists, a default RC file will be created.',
+            '',
+            App::Watson::UI->display_kv(@commands),
+            'Any number of files, tags, dirs, and ignores can be listed after each flag. Ignored files should be space separated. To use "*.filetype" identifier, enclose in "" to avoid shell substitutions',
+            '',
+            App::Watson::UI->details(
+            ['Report bugs to'    => "<$App::Watson::ISSUE_TRACKER>"],
+            ['Watson home page'  => "<$App::Watson::PROJECT_HOMEPAGE>"],
+            ['Copyright'         => "(c) $App::Watson::COPYRIGHT"],
+        );
 
-            # When generating OAuth Token for github/bitbucket
-            # no other params should be passed
-            if (@args > 1){
-                debug_print("Not the only flag, exiting\n");
-                print box(BOLD RED "x");
-                print "Please run remote flag alone to generate GitHub/Bitbucket OAuth token\n";
-                print "      See help for more details\n";
-                exit 1;
-            }
+        exit 0;
+    }
 
-            my $service = lc shift @args;
+    sub version {
+        App::Watson::debug_print("Version flag passed\n");
+
+        say for
+            "watson v$App::Watson::VERSION",
+            "Copyright (c) $App::Watson::COPYRIGHT",
+            "Licensed under MIT, see LICENSE for details",
+            "",
+            "Written by nhmood, see <$App::Watson::PROJECT_HOMEPAGE>";
+
+        exit 0;
+    }
+
+    sub parse_depth {
+        my ($args, $opts) = @_;
+        App::Watson::debug_print("Parse Depth flag passed\n");
+        # Check to make sure next param is a valid number (non-negative)
+
+        if (not @$args) {
+            say App::Watson::UI->warning('--parse-depth requires a numeric argument!');
+            return;
+        }
+
+        my $depth = shift @$args;
+
+        if ($depth =~ /[^0-9]/) {
+            say App::Watson::UI->warning('--parse-depth requires a numeric argument');
+            return;
+        }
+
+        # [reviewme] - should this be $depth + 1 instead?
+        $MAX_DEPTH = $depth;
+        App::Watson::debug_print("Valid parse depth: $MAX_DEPTH\n");
+    }
+
+    sub remote {
+        my ($args, $opts) = @_;
+        App::Watson::debug_print("Remote Flag passed\n");
+
+        # When generating OAuth Token for github/bitbucket
+        # no other params should be passed
+        if (@$args > 1) {
+            App::Watson::debug_print("Not the only flag, exiting\n");
+            say App::Watson::UI->error(
+                '--remote requires a singe argument',
+                'Please run the remote flag alone to generate the GitHub or Bitbucket OAuth token. See help for more details',
+            );
+            exit 1;
+        }
+
+        if (@$args) {
+            my $service = lc shift @$args;
 
             if (my $repo = $REPOSITORIES{$service}) {
                 $repo->setup;
+                exit 0;
             }
-            elsif ($service eq q()) {
-                parse_config() if check_config();
 
-                if (not defined $BITBUCKET->access_token and not defined $GITHUB->access_token) {
-                    say box_error("No remotes currently exist");
-                    say BOLD "      Pass github or bitbucket to watson -r to add", RESET;
-                    say "      That's all we support right now :(";
-                    say "      See help for more details";
-                    exit 1;
-                }
+            say App::Watson::UI->error(
+                qq(Unknown service "$service".),
+                'Run "watson --remote {github|bitbucket}" to add a remote.',
+                'That\'s all we support right now :(',
+                'See help for more details.',
+            );
+            exit 1;
+        }
 
-                if (defined $BITBUCKET->access_token) {
-                    print box(BOLD GREEN "Bitbucket"), qq(\n);
-                    say BOLD "   Bitbucket User :", RESET, q( ), $BITBUCKET->access_token;
-                    say BOLD "   Bitbucket Repo :", RESET, q( ), $BITBUCKET->repo;
-                    say q();
-                }
+        App::Watson::parse_config() if App::Watson::check_config();
 
-                if (defined $GITHUB->access_token) {
-                    say box(BOLD GREEN "GitHub");
-                    say BOLD "   GitHub Key  :", RESET, q( ), $GITHUB->access_token;
-                    say BOLD "   GitHub Repo :", RESET, q( ), $GITHUB->repo;
-                    say q();
-                }
+        if (not defined $BITBUCKET->access_token and not defined $GITHUB->access_token) {
+            say App::Watson::UI->error(
+                'No remotes currently exist!',
+                'Run "watson --remote {github|bitbucket}" to add a remote.',
+                'That\'s all we support right now :(',
+                'See help for more details',
+            );
+            exit 1;
+        }
 
-                exit 1;
-            }
-            else {
-                say box_error("Incorrect argument");
-                say for
-                    "      Please specify either github or bitbucket to setup remote",
-                    "      Or pass without argument to see current remotes",
-                    "      See help for more details";
-                exit 1;
-            }
-        },
-        '--dirs' => sub {
-            debug_print("Dir flag passed\n");
-            $slurp_items->(sub {
-                my ($dir) = @_;
-                debug_print("Dir Index: $dir\n");
+        for my $service (grep { defined $_->access_token } %REPOSITORIES) {
+            my $name = $service->name;
+            say App::Watson::UI->success(
+                $name,
+                App::Watson::UI->details(
+                    ["$name User"   => $service->username],
+                    ["$name Repo"   => $service->repo],
+                ),
+            );
+        }
 
-                if (check_dir($dir)) {
-                    debug_print("dirflag: {$dir} valid directory, added from CL.\n");
+        exit 0;
+    }
 
-                    # If we ever get into this, means CL passed
-                    # Set RC ignore so we don't look at rc
-                    debug_print("Ignoring RC Files/Dirs\n\n");
-                    $IGNORE_RC{dirs} = 1;
+    sub dirs {
+        my ($args, $opts) = @_;
+        App::Watson::debug_print("Dir flag passed\n");
+        slurp_items($args, $opts => sub {
+            my ($dir) = @_;
+            App::Watson::debug_print("Dir Index: $dir\n");
 
-                    # Remove trailing slashes
-                    $dir =~ s{/+\z}{};
-                    push @DIRS, $dir;
-                }
-            });
-        },
-        '--files' => sub {
-            debug_print("File flag passed\n");
-            $slurp_items->(sub {
-                my ($file) = @_;
-                debug_print("File Index: $file\n");
-
-                if (check_file($file)) {
-                    debug_print("fileflag: {$file} valid file, added from CL.\n");
-
-                    # If we ever get into this, means CL passed
-                    # Set RC ignore so we don't look at rc
-                    debug_print("Ignoring RC Files/Dirs\n\n");
-                    $IGNORE_RC{files} = 1;
-
-                    push @FILES, $file;
-                    }
-            });
-        },
-        '--tags' => sub {
-            debug_print("Tag flag passed\n");
-            $slurp_items->(sub {
-                my ($tag) = @_;
-                debug_print("Tag Index: $tag\n");
-                debug_print("tagflag: {$tag} added from CL.\n");
+            if (App::Watson::check_dir($dir)) {
+                App::Watson::debug_print("dirflag: {$dir} valid directory, added from CL.\n");
 
                 # If we ever get into this, means CL passed
                 # Set RC ignore so we don't look at rc
-                debug_print("Ignoring RC tags\n\n");
-                $IGNORE_RC{tags} = 1;
+                App::Watson::debug_print("Ignoring RC Files/Dirs\n\n");
+                $IGNORE_RC{dirs} = 1;
 
-                push @TAGS, $tag;
-            });
-        },
-        '--ignore' => sub {
-            debug_print("Tag flag passed\n");
-            $slurp_items->(sub {
-                my ($ignoreflag) = @_;
-                debug_print("Ignore Index: $ignoreflag\n");
-                debug_print("ignoreflag: {$ignoreflag} added from CL.\n");
+                # Remove trailing slashes
+                $dir =~ s{/+\z}{};
+                push @DIRS, $dir;
+            }
+        });
+    }
+
+    sub files {
+        my ($args, $opts) = @_;
+        App::Watson::debug_print("File flag passed\n");
+        slurp_items($args, $opts => sub {
+            my ($file) = @_;
+            App::Watson::debug_print("File Index: $file\n");
+
+            if (App::Watson::check_file($file)) {
+                App::Watson::debug_print("fileflag: {$file} valid file, added from CL.\n");
 
                 # If we ever get into this, means CL passed
                 # Set RC ignore so we don't look at rc
-                debug_print("Ignoring RC ignore\n\n");
-                $IGNORE_RC{ignore} = 1;
+                App::Watson::debug_print("Ignoring RC Files/Dirs\n\n");
+                $IGNORE_RC{files} = 1;
 
-                push @IGNORE, $ignoreflag;
-            });
-        },
-    );
-
-    # add the short names for each flag
-    for my $key (keys %long_opts) {
-        $flag_actions{$key} = $flag_actions{$long_opts{$key}}
-            or warn "The option $long_opts{$key} is not implemented";
+                push @FILES, $file;
+            }
+        });
     }
 
-    if (not @args) {
-        debug_print("No command line arguments passed.\n\n");
-        return;
+    sub tags {
+        my ($args, $opts) = @_;
+        App::Watson::debug_print("Tag flag passed\n");
+        slurp_items($args, $opts => sub {
+            my ($tag) = @_;
+            App::Watson::debug_print("Tag Index: $tag\n");
+            App::Watson::debug_print("tagflag: {$tag} added from CL.\n");
+
+            # If we ever get into this, means CL passed
+            # Set RC ignore so we don't look at rc
+            App::Watson::debug_print("Ignoring RC tags\n\n");
+            $IGNORE_RC{tags} = 1;
+
+            push @TAGS, $tag;
+        });
     }
 
-    while (@args) {
-        my $item = shift @args;
-        debug_print("Main Item: $item\n");
+    sub ignore {
+        my ($args, $opts) = @_;
+        App::Watson::debug_print("Tag flag passed\n");
+        slurp_items($args, $opts     => sub {
+            my ($ignoreflag) = @_;
+            App::Watson::debug_print("Ignore Index: $ignoreflag\n");
+            App::Watson::debug_print("ignoreflag: {$ignoreflag} added from CL.\n");
 
-        my $action = $flag_actions{$item}
-            or die qq{Can't understand command line argument "$item"};
-        $action->();
+            # If we ever get into this, means CL passed
+            # Set RC ignore so we don't look at rc
+            App::Watson::debug_print("Ignoring RC ignore\n\n");
+            $IGNORE_RC{ignore} = 1;
+
+            push @IGNORE, $ignoreflag;
+        });
     }
-
-    return 1;
 }
 
 
@@ -723,7 +740,7 @@ sub parse_config {
             my $repository = $REPOSITORIES{$name} or die "Unknown service $name";
 
             for my $api (@_) {
-                say box_warn("The ", $repository->name, " API was already set, overwriting")
+                say App::Watson::UI->warn(["The ", $repository->name, " API was already set, overwriting"])
                     if defined $repository->access_token;
 
                 # No need for regex on API key
@@ -737,7 +754,7 @@ sub parse_config {
             my $repository = $REPOSITORIES{$name} or die "Unknown service $name";
 
             for my $repo (@_) {
-                say box_warn("The ", $repository->name, "Repo was already set, overwriting")
+                say App::Watson::UI->warn(["The ", $repository->name, " Repo was already set, overwriting"])
                     if defined $repository->repo;
 
                 # No need for regex on repo
@@ -907,7 +924,7 @@ sub parse_file {
             tag     => $ftag,
         );
 
-        push @{ $issue_list{$ftag} }, $issue->as_hash;
+        push @{ $issue_list{$ftag} }, $issue;
 
         $issue->post;
     }
@@ -983,7 +1000,7 @@ sub comment_regex {
         return $comment->{lc $_} // next;
     }
 
-    say App::Watson::box_warn("Could not determine filetype for $file, using # as comment");
+    say App::Watson::UI->warning("Could not determine filetype for $file, using # as comment");
     return $sh_comment;
 }
 
@@ -1006,7 +1023,7 @@ sub create_report {
 
     my $pwd = Cwd::cwd();
     my $time = localtime;
-    say { $fh } header("Run in: $pwd", "Run at: $time");
+    say { $fh } App::Watson::UI->header("Run in: $pwd", "Run at: $time");
 
     # Display output for each file parsed
     for my $entry (@entries){
@@ -1031,37 +1048,42 @@ sub print_results {
 
         # Go through and see if there are any issues with given file
         # Sets print color and whether to continue to print
-        my $issueflag = grep { 0+@{$file_report->{$_}} } @TAGS;
-
-        if ($issueflag){
-            say { $fh } "";
-            say { $fh } box_error(UNDERLINE $file_report->{filename});
-        }
-        else {
-            say { $fh } box_ok(   UNDERLINE $file_report->{filename});
-        }
+        my $issueflag = grep { 0 + @{$file_report->{$_}} } @TAGS;
 
         # If there are no issues, don't print anything (go to next file)
         # Else, continue on and print the issues
-        next unless $issueflag;
+        if (not $issueflag) {
+            say { $fh } App::Watson::UI->success(
+                UNDERLINE $file_report->{filename},
+            );
+            next;
+        }
+
+        say { $fh } "";
+        say { $fh } App::Watson::UI->error(UNDERLINE $file_report->{filename});
 
         # Cycle through all tags and print issues for each
-        for my $tag (@TAGS){
+        for my $tag (@TAGS) {
             my @issues = @{$file_report->{$tag}} or next;
 
             # Print tag, line #, and issue
-            say { $fh } box(BOLD BLUE $tag);
 
+            my @lines;
             for my $issue (@issues) {
                 # Check if issue has been closed on Github or Bitbucket, set to resolved
                 my @solved_on =
-                    map  { q( ) . box(BOLD GREEN "Resolved on " . $_->name) }
-                    grep { $_->closed_issues->contains($issue->{md5}) }
+                    map  { App::Watson::UI->tag(BOLD GREEN "Resolved on " . $_->name) }
+                    grep { $_->closed_issues->contains($issue->md5) }
                     values %REPOSITORIES;
 
-                say { $fh } WHITE "  line $issue->{linenumber} - ", RESET, BOLD $issue->{comment}, RESET, @solved_on;
+                push @lines, [
+                    [RESET, WHITE "  line " . $issue->line, RESET],
+                    RESET, BOLD, $issue->comment, RESET, @solved_on,
+                ];
             }
-            say { $fh } q();
+            say { $fh } $_ for
+                App::Watson::UI->tag(BOLD BLUE $tag),
+                App::Watson::UI->details(@lines);
         }
     }
 
@@ -1085,7 +1107,7 @@ BEGIN {
         open_issues   => undef,
         closed_issues => undef,
     );
-    my @other_fields = qw<access_token>;
+    my @other_fields = qw< access_token >;
 
     my %lazy_init = (
         open_issues   => sub { App::Watson::IssueList->new },
@@ -1323,49 +1345,50 @@ BEGIN {
 sub App::Watson::Repository::GitHub::setup {
     my $self = shift;
 
-    say App::Watson::header();
+    say App::Watson::UI->header();
 
-    say App::Watson::box(BOLD GREEN q(+)), BOLD "Obtaining OAuth Token for GitHub...\n", RESET;
+    say App::Watson::UI->info(
+        'Obtaining OAuth Token for GitHub...',
+        q(),
+    );
 
     # Parse config to make sure no previous API exists
     App::Watson::parse_config() if App::Watson::check_config();
 
     if (defined $self->api or defined $self->repo) {
-        my $overwrite = uc App::Watson::prompt(
-            { default => q(N) },
-            App::Watson::box(BOLD RED q(!)),
-            BOLD "Previous GitHub API + Repo is in RC, are you sure you want to overwrite?\n", RESET,
-            "      (Y)es/(N)o: ",
-        );
+        say App::Watson::UI->warning('Previous GitHub API + Repo is in RC, are you sure you want to overwrite?');
+        my $overwrite = App::Watson::UI->prompt_yn(default => 'N');
         say q();
 
-        if ($overwrite =~ /\A (?: NO | N )? \z/x) {
-            say App::Watson::box_error("Not overwriting current GitHub API + repo info");
+        if (not $overwrite) {
+            say App::Watson::UI->error('Not overwriting current GitHub API + repo info');
             exit 1;
         }
     }
 
-    say for
-        App::Watson::box_info("Access to your GitHub account required to make/update issues"),
-        "      See help or README for more details on GitHub/Bitbucket access",
-        q();
+    say App::Watson::UI->info(
+        'Access to your GitHub account required to make/update issues',
+        'See help or README for more details on GitHub/Bitbucket access',
+        q(),
+    );
 
     # Get username, clear newlines surrounding text
     # If blank, give error
-    $self->username(lc App::Watson::prompt(BOLD "Username: ", RESET, {
+    $self->username(lc App::Watson::UI->prompt(
+        'Username:',
         default => sub {
-            say App::Watson::box_error("Input blank. Please enter your username!");
+            say App::Watson::UI->error('Input blank. Please enter your username!');
             exit 1;
         },
-    }));
-
-    $self->password(App::Watson::prompt(BOLD "Password: ", RESET, {
-        echo => 0,
+    ));
+    $self->password(App::Watson::UI->prompt(
+        'Password:',
+        silent => 1,
         default => sub {
-            say App::Watson::box_error("Input blank. Please enter your password!");
+            say App::Watson::UI->error('Input blank. Please enter your password!');
             exit 1;
         },
-    }));
+    ));
 
     # fetch an access token from GitHub
     $self->authorization;
@@ -1373,42 +1396,49 @@ sub App::Watson::Repository::GitHub::setup {
 
     # Get repo information
     # If blank, give error
-    say for
-        App::Watson::box_info(BOLD "Repo information required"),
-        "      Please provide owner that repo is under followed by repo name",
-        "      e.g. owner: nhmood, repo: watson (case sensitive)",
-        "      See help or README for more details on GitHub access",
-        q();
+    say App::Watson::UI->info(
+        'Repo information required',
+        'Please provide owner that repo is under followed by repo name',
+        'e.g. owner: "nhmood", repo: "watson" (case insensitive)',
+        'See help or README for more details on GitHub access',
+        q(),
+    );
 
-    my $owner = lc App::Watson::prompt(BOLD "Owner: ", RESET, {
+    my $owner = lc App::Watson::UI->prompt(
+        'Owner:',
         default => sub {
-            say App::Watson::box_error("Input blank. Please enter the owner the repo is under!");
+            say App::Watson::UI->error('Input blank. Please enter the owner the repo is under!');
             exit 1;
         },
-    });
-    my $repo = lc App::Watson::prompt(BOLD "Repo: ", RESET, {
+    );
+    my $repo = lc App::Watson::UI->prompt(
+        'Repo:',
         default => sub {
-            say App::Watson::box_error("Input blank. Please enter the repo name!");
+            say App::Watson::UI->error('Input blank. Please enter the repo name!');
             exit 1;
         },
-    });
+    );
     $self->repo("$owner/$repo");
 
     $self->test_access;
 
-    say App::Watson::box_error("Creating label for watson on GitHub...\n");
-    $self->create_label("watson", "00AEEF");
+    say App::Watson::UI->info(
+        'Creating label for watson on GitHub...',
+        q(),
+    );
+    $self->create_label('watson', '00AEEF');
 
     Configuration->replace_sections($RCNAME,
         github     => [$self->access_token],
         githubrepo => [$self->repo],
     );
 
-    say for
-        App::Watson::box_ok("GitHub successfully setup"),
-        "      Issues will now automatically be updated on GitHub by default",
-        "      See help or README for more details on GitHub/Bitbucket access",
-        q();
+    say App::Watson::UI->success(
+        'GitHub successfully setup',
+        'Issues will now automatically be updated on GitHub by default',
+        'See help or README for more details on GitHub/Bitbucket access',
+        q(),
+    );
     exit 0;
 }
 
@@ -1426,13 +1456,13 @@ sub App::Watson::Repository::GitHub::create_label {
     );
 
     if ($response->code == App::Watson::UserAgent::HTTP_CREATED) {
-        say App::Watson::box_ok("Label successfully created");
+        say App::Watson::UI->success("Label successfully created");
     }
     elsif ($response->decoded_content =~ m/already_exists/i) {
-        say App::Watson::box_info("Label already exists");
+        say App::Watson::UI->info("Label already exists");
     }
     else {
-        say App::Watson::box_error("Unable to access /repo/@{[ $self->repo ]} (HTTP Status @{[ $response->status_line ]})");
+        say App::Watson::UI->error("Unable to access /repo/@{[ $self->repo ]} (HTTP Status @{[ $response->status_line ]})");
         exit 1;
     }
     say q();
@@ -1461,10 +1491,10 @@ sub App::Watson::Repository::GitHub::authorization {
             );
 
             if ($response->code != App::Watson::UserAgent::HTTP_CREATED) {
-                say box_error("Unable to obtain OAuth Token");
+                say App::Watson::UI->error("Unable to obtain OAuth Token");
                 exit 1;
             }
-            say box_ok("Obtained OAuth Token");
+            say App::Watson::UI->success("Obtained OAuth Token");
 
             my $dsc = $response->json;
             my $access_token = $dsc->{token};
@@ -1489,11 +1519,11 @@ sub App::Watson::Repository::GitHub::test_access {
     );
 
     if (not $response->is_success) {
-        say box_error("Unable to access /repos/@{[ $self->repo ]} (HTTP Status @{[ $response->status_line ]}).");
+        say App::Watson::UI->error("Unable to access /repos/@{[ $self->repo ]} (HTTP Status @{[ $response->status_line ]}).");
         exit 1;
     }
 
-    say box_ok("Repo successfully accessed");
+    say App::Watson::UI->success("Repo successfully accessed");
     return 1;
 }
 
@@ -1514,76 +1544,79 @@ sub App::Watson::Repository::Bitbucket::setup {
     # Crappy fix, won't need this when OAuth is implemented for Bitbucket
     $REMOTESETUP = 1;
 
-    say App::Watson::header();
+    say App::Watson::UI->header();
 
-    say App::Watson::box(BOLD GREEN q(+)), BOLD "Attempting to access Bitbucket...", RESET;
+    say App::Watson::UI->info("Attempting to access Bitbucket...");
 
     # Parse config to make sure no previous API exists
     App::Watson::parse_config() if App::Watson::check_config();
 
     if (defined $self->access_token or defined $self->repo) {
-        my $overwrite = uc App::Watson::prompt(
-            { default => q(N) },
-            App::Watson::box(BOLD RED q(!)),
-            BOLD "Previous Bitbucket Repo is in RC, are you sure you want to overwrite?\n", RESET,
-            "      (Y)es/(N)o: "
-        );
+        say App::Watson::UI->warning('Previous Bitbucket Repo is in RC, are you sure you want to overwrite?');
+        my $overwrite = App::Watson::UI->prompt_yn(default => 'N');
         say q();
 
-        if ($overwrite =~ /\A (?: NO | N )?\z/x) {
-            say App::Watson::box_error("Not overwriting current Bitbucket repo info");
+        if (not $overwrite) {
+            say App::Watson::UI->error("Not overwriting current Bitbucket repo info");
             exit 1;
         }
     }
 
-    say for
-        box_info("Access to your Bitbucket account required to make/update issues"),
-        "      See help or README for more details on GitHub/Bitbucket access",
+    say App::Watson::UI->info(
+        "Access to your Bitbucket account required to make/update issues",
+        "See help or README for more details on GitHub/Bitbucket access",
         q(),
-        join(box(BOLD RED q(!)), BOLD "Bitbucket OAuth not implemented yet.", RESET),
-        "      Basic HTTP Auth in use, will request PW entry every time.",
-        q();
+    );
+    say App::Watson::UI->warning(
+        "Bitbucket OAuth not implemented yet.",
+        "Basic HTTP Auth in use, will request PW entry every time.",
+        q(),
+    );
 
-    my $username = lc App::Watson::prompt(BOLD "Username: ", RESET, {
+    my $username = lc App::Watson::UI->prompt(
+        'Username:',
         default => sub {
-            say App::Watson::box_error("Input blank. Please enter your username!");
+            say App::Watson::UI->error('Input blank. Please enter your username!');
             exit 1;
         },
-    });
+    );
     $self->username($username);
     $self->access_token($username);
 
-    my $password = App::Watson::prompt(BOLD "Password: ", RESET, {
-        echo => 0,
+    my $password = App::Watson::UI->prompt(
+        'Password:',
+        silent  => 1,
         default => sub {
-            say App::Watson::box_error("Input blank. Please enter your password!");
+            say App::Watson::UI->error('Input blank. Please enter your password!');
             exit 1;
         },
-    });
+    );
     $self->password($password);
 
     # Get repo information
     # If blank, give error
-    say for
-        App::Watson::box_info("Repo information required"),
-        "      Please provide owner that repo is under followed by repo name",
-        "      e.g. owner: nhmood, repo: watson (case sensitive)",
-        "      See help or README for more details on GitHub access",
-        q();
+    say App::Watson::UI->info(
+        'Repo information required',
+        'Please provide owner that repo is under followed by repo name',
+        'e.g. owner: nhmood, repo: watson (case insensitive)',
+        'See help or README for more details on GitHub access',
+        q(),
+    );
 
-
-    my $owner = lc App::Watson::prompt(BOLD "Owner: ", RESET, {
+    my $owner = lc App::Watson::UI->prompt(
+        'Owner:',
         default => sub {
-            say App::Watson::box_error("Input blank. Please enter the owner the repo is under!");
+            say App::Watson::UI->error('Input blank. Please enter the owner the repo is under!');
             exit 1;
         },
-    });
-    my $repo = lc App::Watson::prompt(BOLD "Repo: ", RESET, {
+    );
+    my $repo = lc App::Watson::UI->prompt(
+        'Repo:',
         default => sub {
-            say App::Watson::box_error("Input blank. Please enter the repo name!");
+            say App::Watson::UI->error('Input blank. Please enter the repo name!');
             exit 1;
         },
-    });
+    );
     say q();
     $self->repo("$owner/$repo");
 
@@ -1595,12 +1628,13 @@ sub App::Watson::Repository::Bitbucket::setup {
         bitbucketrepo => [$self->repo],
     );
 
-    say for
-        App::Watson::box_ok("Bitbucket successfully setup"),
-        "      Issues will now automatically be updated on Bitbucket by default",
-        "      Use -l, --local to not update against GitHub",
-        "      See help or README for more details on GitHub/Bitbucket access",
-        q();
+    say App::Watson::UI->success(
+        'Bitbucket successfully set up.',
+        'Issues will now automatically be updated on Bitbucket by default',
+        'Use -l, --local to not update against GitHub',
+        'See help or README for more details on GitHub/Bitbucket access',
+        q(),
+    );
 
     exit 0;
 }
@@ -1616,17 +1650,19 @@ sub App::Watson::Repository::Bitbucket::test_access {
     my $self = shift;
 
     my $response = App::Watson::UserAgent->get(
-        sprintf('https://bitbucket.org/api/1.0/repositories/%s', $self->repo),
+        (sprintf 'https://bitbucket.org/api/1.0/repositories/%s', $self->repo),
         Authorization => $self->authorization,
     );
 
     if (not $response->is_success) {
-        say App::Watson::box_error("Unable to access remote repo with given credentials."),
-        say BOLD "Check that credentials are correct and repository exists under owner", RESET;
+        say App::Watson::UI->error(
+            'Unable to access remote repo with given credentials',
+            'Check that credentials are correct and that the repository exists under the owner.',
+        );
         exit 1;
     }
 
-    say App::Watson::box_ok("Successfully accessed remote repo with given credentials");
+    say App::Watson::UI->success("Successfully accessed remote repo with given credentials");
     return 1;
 }
 
@@ -1655,10 +1691,11 @@ sub App::Watson::Repository::fetch_issues {
 
     if (not $response->is_success) {
         $self->valid(0);
-        say for
-            join(q() => App::Watson::box(BOLD RED "x"), "--> ", RESET, BOLD "Unable to access remote, $name settings may be invalid"),
-            join(q() => BOLD, "          Consider running --remote (-r) option to regenerate settings", RESET),
-            q();
+        say App::Watson::UI->warning(
+            'Unable to access remote',
+            "The $name settings may be invalid. Consider running watson with the --remote option to regenerate the settings.",
+            q(),
+        );
         return;
     }
 
@@ -1674,13 +1711,13 @@ sub App::Watson::Repository::fetch_issues {
 
     if (not $response->is_success) {
         $self->valid(0);
-        say App::Watson::box_warn("Could not get closed issues on $name, ignoring.");
+        say App::Watson::UI->warning("Could not get closed issues on $name, ignoring.");
         return;
     }
 
     $self->closed_issues->add($_) for
         $self->fetch_issues_extract_issues($response->json);
-    App::Watson::debug_print(Data::Dumper::Dump($self->closed_issues));
+    App::Watson::debug_print(Data::Dumper::Dumper($self->closed_issues));
 
     return;
 }
@@ -1845,62 +1882,125 @@ sub App::Watson::Repository::Bitbucket::post_issue_url {
     return sprintf 'https://api.github.com/repos/%s/issues', $self->repo;
 }
 
+######################
+# UserInterface class
+######################
 
-##########################
-# Box glyph, e.g [!], [x]
-##########################
+BEGIN {
+    package App::Watson::UI;
+    use Term::ANSIColor qw< :constants >;
 
-sub box {
-    return join q(), BOLD, "[ ", RESET, @_, RESET, BOLD, " ] ", RESET;
-}
-
-# often-used combinations:
-sub box_ok    {
-    return join q(), box(BOLD GREEN   q(o)), BOLD @_, RESET;
-}
-
-sub box_info  {
-    return join q(), box(BOLD YELLOW  q(!)), BOLD @_, RESET;
-}
-
-sub box_warn  {
-    return join q(), box(BOLD MAGENTA q(!)), BOLD @_, RESET;
-}
-
-sub box_error {
-    return join q(), box(BOLD RED     q(x)), BOLD @_, RESET;
-}
-
-#########
-# prompt
-#########
-
-sub prompt {
-    my (@args) = @_;
-    my %kw_args;
-    if (ref $args[0] eq 'HASH') {
-        %kw_args = %{ shift @args };
-    }
-    elsif (ref $args[-1] eq 'HASH') {
-        %kw_args = %{ pop @args };
+    sub new {
+        die "Sorry, this is a singleton class";
     }
 
-    my %config = (
-        out  => select(),
-        in   => \*STDIN,
-        echo => 1,
-        %kw_args,
-    );
+    sub prompt {
+        my ($self, $prompt, %kw_args) = @_;
 
-    # printflush prints the data, then flushes immediately
-    $config{out}->printflush(@args);
-    system 'stty', '-echo' unless $config{echo};
-    chomp(my $answer = readline $config{in});
-    system 'stty', 'echo'  unless $config{echo};
-    if (exists $config{default} and not length $answer) {
-        return $config{default}->() if ref $config{default} eq 'CODE';
-        return $config{default};
+        # printflush prints the data, then flushes immediately
+        STDIN->printflush(BOLD, _flatten($prompt), q( ), RESET);
+
+        system 'stty', '-echo' if $kw_args{silent};
+        chomp(my $answer = <STDIN>);
+        system 'stty', 'echo'  if $kw_args{silent};
+
+        if (exists $kw_args{default} and not length $answer) {
+            my $default = $kw_args{default};
+            return $default->() if ref $default eq 'CODE';
+            return $default;
+        }
+
+        return $answer;
     }
-    return $config{default} if exists $config{default} and not length $answer;
-    return $answer;
+
+    sub prompt_yn {
+        my ($self, %kw_args) = @_;
+        my $result = uc $self->prompt('(Y)es/(N)o:', %kw_args);
+        return !scalar($result =~ /\A [N][O]? \z/x);
+    }
+
+    sub tag {
+        my ($self, @args) = @_;
+        Carp::croak "\@args is empty" if not @args;
+        Carp::croak "\$args[0] is undef" if not defined $args[0];
+        return join q(), BOLD, "[ ", RESET, @args, RESET, BOLD, " ] ", RESET;
+    }
+
+    sub generic_message {
+        my ($self, $tag, $message, @details) = @_;
+        my $box = $self->tag(_flatten($tag));
+        my $headline = join q() => BOLD, _flatten($message), RESET;
+        return $box . join qq(\n) => $headline, _flatten(@details);
+    }
+
+    sub success {
+        my ($self, $message, @details) = @_;
+        return $self->generic_message([BOLD GREEN, 'o'],   $message, @details);
+    }
+
+    sub info {
+        my ($self, $message, @details) = @_;
+        return $self->generic_message([BOLD GREEN, 'i'],   $message, @details);
+    }
+
+    sub warning {
+        my ($self, $message, @details) = @_;
+        return $self->generic_message([BOLD MAGENTA, '!'], $message, @details);
+    }
+
+    sub error {
+        my ($self, $message, @details) = @_;
+        return $self->generic_message([BOLD RED, 'x'],     $message, @details);
+    }
+
+    sub header {
+        my ($self, @info) = @_;
+        unshift @info, q() if @info;  # adds an empty line before further info
+        # Each line is a string or an arrayref of strings
+        # Here, we flatten them (if applicable), add a newline,
+        # and return a single string.
+        return join qq(\n),
+            map { _flatten($_) }
+            [BOLD "------------------------------"],
+            [BOLD "watson", RESET, " - ", BOLD YELLOW "inline issue manager", RESET],
+            @info,
+            [BOLD "------------------------------"],
+            q();
+    }
+
+    sub details {
+        my ($self, @kv_pairs) = @_;
+        for (@kv_pairs) {
+            my ($k, @v) = _flatten(@$_);
+            $_ = [qq($k:) => @v];
+        }
+        return $self->display_kv(@kv_pairs);
+    }
+
+    sub display_kv {
+        my ($self, @kv_pairs) = @_;
+
+        my $max_key_length = 0;
+        for my $pair (@kv_pairs) {
+            my ($key) = @$pair;
+            if ($max_key_length < length $key) {
+                $max_key_length = length $key;
+            }
+        }
+
+        # cap the key length to 80/3 = 26
+        $max_key_length = int(80/3) if $max_key_length > int(80/3);
+
+        my $str = q();
+        for my $pair (@kv_pairs) {
+            my ($key, @values) = @$pair;
+            my $aligned_key = sprintf q(%-*s), $max_key_length, $key;
+            $str .= join(q() => BOLD, $aligned_key, RESET, q( ), @values, qq(\n));
+        }
+        return $str;
+    }
+
+    sub _flatten {
+        return map { ref $_ ? (join q() => @$_) : $_ } @_;
+    }
 }
