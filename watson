@@ -5,9 +5,14 @@
 # This content is licensed under the MIT License
 # See the file LICENSE for copying permission
 
+use strict;
+use feature qw< say state >;  # implies dependency on perl 5.010
+use autodie; # in Core since 5.010
+use warnings;
+use utf8;  # in Core since 5.006 -- define encoding of source code
+
 package App::Watson;
-our $VERSION = '1.3';
-    $VERSION = eval $VERSION; # PAUSE hack
+use version; our $VERSION = qv("1.003_002"); # PAUSE hack
 
 our $COPYRIGHT = '2012-2013 goosecode labs';
 our $PROJECT_HOMEPAGE = 'http://goosecode.com/projects/watson';
@@ -41,30 +46,24 @@ our $ISSUE_TRACKER    = 'https://github.com/nhmood/watson-perl/issues';
 # Global parameters
 ###########################################################
 
-use strict;
-use feature qw< say state >;  # implies dependency on perl 5.010
-use autodie; # in Core since 5.010
-use warnings;
-use utf8;  # in Core since 5.006 -- define encoding of source code
-
 local $SIG{INT} = sub {
     print "\n";
     exit 1;
 };
 
-use Term::ANSIColor qw< :constants >; # in Core since 5.006
-use Data::Dumper qw<>;                # in Core since 5.005
-use Digest::MD5 qw<>;                 # in Core since 5.007.003
-use File::Copy qw<>;                  # in Core since 5.002
-use MIME::Base64 qw<>;                # in Core since 5.007.003
-use Carp qw<>;                        # in Core since 5.000
-use Encode qw<>;                      # in Core since 5.007.003
-use IO::Handle qw<>;                  # in Core since 5.003.007
-use Cwd qw<>;                         # in Core since 5.000
-use English qw< -no_match_vars >;     # in Core since 5
-use Hash::Util qw< lock_keys >;       # in Core since 5.008
+use Term::ANSIColor qw< :constants >;     # in Core since 5.006
+use Data::Dumper    qw<>;                 # in Core since 5.005
+use Digest::MD5     qw<>;                 # in Core since 5.007.003
+use File::Copy      qw<>;                 # in Core since 5.002
+use MIME::Base64    qw<>;                 # in Core since 5.007.003
+use Carp            qw<>;                 # in Core since 5.000
+use Encode          qw<>;                 # in Core since 5.007.003
+use IO::Handle      qw<>;                 # in Core since 5.003.007
+use Cwd             qw<>;                 # in Core since 5.000
+use English         qw< -no_match_vars >; # in Core since 5
+use Hash::Util      qw< lock_keys >;      # in Core since 5.008
 
-use JSON::PP qw<>;                    # in Core since 5.013.009
+use JSON::PP        qw<>;                 # in Core since 5.013.009
 # use LWP::UserAgent; -- loaded on demand
 
 # [todo] - list JSON::PP as external dependency
@@ -81,7 +80,7 @@ our @TAGS;
 our @IGNORE;
 our $REMOTESETUP = 0;
 our $MAX_DEPTH = 0;
-lock_keys(our %IGNORE_RC, qw<dirs files tags ignore>);
+lock_keys(our %IGNORE_RC, qw< dirs files tags ignore >);
 
 our $GITHUB    = App::Watson::Repository::GitHub->new;
 our $BITBUCKET = App::Watson::Repository::Bitbucket->new;
@@ -91,16 +90,16 @@ our %REPOSITORIES = (
     bitbucket => $BITBUCKET,
 );
 
-exit main(@ARGV);
+exit main(@ARGV) unless caller; # only execute if called directly
 
 sub main {
     my @args = @_;
 
-    parse_command_line(@args);
+    App::Watson::CommandLine::parse(@args);
     check_config();
     parse_config();
-    my @issue_tree = start_scan();
-    create_report(@issue_tree);
+    my @issue_tree = start_scan(\@FILES, \@DIRS);
+    create_report(\@TAGS, @issue_tree);
     return 0;
 }
 
@@ -160,7 +159,7 @@ sub check_file {
 
     # Check if file can be opened
     open my $tFILE, '<', $file or do {
-        print(qq{Could not open "$file": $!\n});
+        say qq{Could not open "$file": $!};
         return 0;
     };
 
@@ -250,19 +249,10 @@ EOF
     return $success;
 }
 
-
-###########################################################
-# Command line parser
-###########################################################
-
-# Parse command line arguments
-sub parse_command_line {
-    return App::Watson::CommandLine::parse(@_);
-}
-
 BEGIN {
     package App::Watson::CommandLine;
     use Term::ANSIColor qw< :constants >;
+    use English qw< -no_match_vars >;
 
     my @options = (
         {
@@ -369,13 +359,13 @@ BEGIN {
         }
 
         say for
-            BOLD . "Usage: $0 [OPTIONS...]" . RESET,
-            '',
+            BOLD . "Usage: $PROGRAM_NAME [OPTIONS...]" . RESET,
+            q(),
             'Running watson with no arguments will take settings from the RC file. If no RC file exists, a default RC file will be created.',
-            '',
+            q(),
             App::Watson::UI->display_kv(@commands),
             'Any number of files, tags, dirs, and ignores can be listed after each flag. Ignored files should be space separated. To use "*.filetype" identifier, enclose in "" to avoid shell substitutions',
-            '',
+            q(),
             App::Watson::UI->details(
             ['Report bugs to'    => "<$App::Watson::ISSUE_TRACKER>"],
             ['Watson home page'  => "<$App::Watson::PROJECT_HOMEPAGE>"],
@@ -392,7 +382,7 @@ BEGIN {
             "watson v$App::Watson::VERSION",
             "Copyright (c) $App::Watson::COPYRIGHT",
             "Licensed under MIT, see LICENSE for details",
-            "",
+            q(),
             "Written by nhmood, see <$App::Watson::PROJECT_HOMEPAGE>";
 
         exit 0;
@@ -418,6 +408,8 @@ BEGIN {
         # [reviewme] - should this be $depth + 1 instead?
         $MAX_DEPTH = $depth;
         App::Watson::debug_print("Valid parse depth: $MAX_DEPTH\n");
+
+        return;
     }
 
     sub remote {
@@ -481,7 +473,7 @@ BEGIN {
     sub dirs {
         my ($args, $opts) = @_;
         App::Watson::debug_print("Dir flag passed\n");
-        slurp_items($args, $opts => sub {
+        return slurp_items($args, $opts => sub {
             my ($dir) = @_;
             App::Watson::debug_print("Dir Index: $dir\n");
 
@@ -503,7 +495,7 @@ BEGIN {
     sub files {
         my ($args, $opts) = @_;
         App::Watson::debug_print("File flag passed\n");
-        slurp_items($args, $opts => sub {
+        return slurp_items($args, $opts => sub {
             my ($file) = @_;
             App::Watson::debug_print("File Index: $file\n");
 
@@ -523,7 +515,7 @@ BEGIN {
     sub tags {
         my ($args, $opts) = @_;
         App::Watson::debug_print("Tag flag passed\n");
-        slurp_items($args, $opts => sub {
+        return slurp_items($args, $opts => sub {
             my ($tag) = @_;
             App::Watson::debug_print("Tag Index: $tag\n");
             App::Watson::debug_print("tagflag: {$tag} added from CL.\n");
@@ -540,7 +532,7 @@ BEGIN {
     sub ignore {
         my ($args, $opts) = @_;
         App::Watson::debug_print("Tag flag passed\n");
-        slurp_items($args, $opts     => sub {
+        return slurp_items($args, $opts => sub {
             my ($ignoreflag) = @_;
             App::Watson::debug_print("Ignore Index: $ignoreflag\n");
             App::Watson::debug_print("ignoreflag: {$ignoreflag} added from CL.\n");
@@ -562,7 +554,7 @@ BEGIN {
 
 BEGIN {
     package App::Watson::Configuration;
-    use English qw<-no_match_vars>; # in Core since 5
+    use English qw< -no_match_vars >;
 
     sub new_from_file {
         my ($class, $filename) = @_;
@@ -673,6 +665,131 @@ BEGIN {
 
         return;
     }
+
+    my %actions = (
+        dirs        => \&handle_dirs,
+        tags        => \&handle_tags,
+        ignore      => \&handle_ignore,
+        github      => \&handle_service,
+        githubrepo  => \&handle_repo,
+        bitbucket   => \&handle_service,
+        bitbucketrepo=>\&handle_repo,
+    );
+
+    sub parse {
+        my ($self) = @_;
+
+        # Add . and .. and .git to ignorelist
+        push @IGNORE, qw< . .. *.swp .watsonrc >;
+
+        for my $section ($self->section_names) {
+            my $action = $actions{$section} or die qq/Unknown section "$section"/;
+            my @lines = @{ $self->section($section) };
+
+            App::Watson::debug_print("[$section] contains [@lines]\n");
+
+            $action->($section => $_) for @lines;
+        }
+
+        return 1;
+    }
+
+    # If @DIRS or @FILES wasn't populated by CL args, populate from rc
+    sub handle_dirs {
+        my ($name, @lines) = @_;
+        if ($IGNORE_RC{dirs} or $IGNORE_RC{files}) {
+            App::Watson::debug_print("Directories set from command line, ignoring rc [dirs]!\n");
+            return;
+        }
+
+        for my $line (@lines) {
+            # Regex for dirs, then push to @DIRS
+            $line =~ m{\A\s* ((?:[.]?/?\w?+/?)+) \s*\z}x
+                or die qq{The line "$line" in a "dirs" section did not contain a valid path};
+            (my $dir = $1) =~ s{/+\z}{};
+            App::Watson::debug_print("dirs: $dir added from rc. \n");
+            push @DIRS, $dir;
+        }
+
+        return;
+    }
+
+    # If @TAGS wasn't populated by CL args, populate from rc
+    sub handle_tags {
+        my ($name, @lines) = @_;
+        if ($IGNORE_RC{tags}) {
+            App::Watson::debug_print("Directories set from command line, ignoring rc [dirs]!\n");
+            return;
+        }
+
+        for my $line (@lines) {
+            # Regex for tags, then push to @TAGS
+            $line =~ /^\A\s* (\w+(?: [|] [0-9] )?) \s* (?: \#*.* )? \z/x
+                or die qq{The line "$line" in a "tags" section did not contain a valid tag};
+            my $tag = $1;
+            App::Watson::debug_print("tags: $tag added from rc.\n");
+            push @TAGS, $tag;
+        }
+
+        return;
+    }
+
+    # If @IGNORE wasn't populated by CL args, populate from rc
+    sub handle_ignore {
+        my ($name, @lines) = @_;
+        if ($IGNORE_RC{ignore}) {
+            App::Watson::debug_print("Directories set from command line, ignoring rc [dirs]!\n");
+            return;
+        }
+
+        for my $line (@lines) {
+            # Regex for dirs to ignore, then push to @IGNOREDIR
+            $line =~ m{\A\s* (.+) \s*\z}x
+                or die qq{The line "$line" in a "ignore" section did not contain a valid path};
+            (my $path = $1) =~ s{(/)+\z}{}; # remove trailing slashes
+            App::Watson::debug_print("ignore: $path added from rc.\n");
+            push @IGNORE, $path;
+        }
+
+        return;
+    }
+
+    sub handle_service {
+        my ($name, @lines) = @_;
+        my $repository = $REPOSITORIES{$name} or die "Unknown service $name";
+
+        for my $api (@lines) {
+            say App::Watson::UI->warn(["The ", $repository->name, " API was already set, overwriting"])
+                if defined $repository->access_token;
+
+            # No need for regex on API key
+            App::Watson::debug_print($repository->name . "API: $api\n");
+            $repository->access_token($api);
+        }
+
+        return;
+    }
+
+    sub handle_repo {
+        my ($name, @lines) = @_;
+        $name =~ s/repo\z//;
+        my $repository = $REPOSITORIES{$name} or die "Unknown service $name";
+
+        for my $repo (@lines) {
+            say App::Watson::UI->warn(["The ", $repository->name, " Repo was already set, overwriting"])
+                if defined $repository->repo;
+
+            # No need for regex on repo
+            App::Watson::debug_print($repository->name . "Repo: $repo\n");
+            $repository->repo($repo);
+        }
+
+        # If setting up remote, don't ask for password / do any remote stuff
+        # Won't need this when OAuth implemented but it does optimize the code...
+
+        # Get list of issues, also checks if API key is valid
+        $repository->fetch_issues unless $REMOTESETUP;
+    }
 }
 
 # Go through config file and determine dirs, tags, and ignores to use
@@ -680,107 +797,7 @@ sub parse_config {
     # Parse rc
     debug_print("Parsing $RCNAME\n");
 
-    # Add . and .. and .git to ignorelist
-    push @IGNORE, qw< . .. *.swp .watsonrc >;
-
-    my %actions = (
-        # If @DIRS or @FILES wasn't populated by CL args, populate from rc
-        dirs => sub {
-            my $name = shift;
-            if ($IGNORE_RC{dirs} || $IGNORE_RC{files}) {
-                debug_print("Directories set from command line, ignoring rc [dirs]!\n");
-                return;
-            }
-
-            for my $line (@_) {
-                # Regex for dirs, then push to @DIRS
-                $line =~ m{\A\s* ((?:[.]?/?\w?+/?)+) \s*\z}x
-                    or die qq{The line "$line" in a "dirs" section did not contain a valid path};
-                (my $dir = $1) =~ s{/+\z}{};
-                debug_print("dirs: $dir added from rc. \n");
-                push @DIRS, $dir;
-            }
-        },
-        # If @TAGS wasn't populated by CL args, populate from rc
-        tags => sub {
-            my $name = shift;
-            if ($IGNORE_RC{tags}) {
-                debug_print("Directories set from command line, ignoring rc [dirs]!\n");
-                return;
-            }
-
-            for my $line (@_) {
-                # Regex for tags, then push to @TAGS
-                $line =~ /^\A\s* (\w+(?: [|] [0-9] )?) \s* (?: \#*.* )? \z/x
-                    or die qq{The line "$line" in a "tags" section did not contain a valid tag};
-                my $tag = $1;
-                debug_print("tags: $tag added from rc.\n");
-                push @TAGS, $tag;
-            }
-        },
-        # If @IGNORE wasn't populated by CL args, populate from rc
-        ignore => sub {
-            my $name = shift;
-            if ($IGNORE_RC{ignore}) {
-                debug_print("Directories set from command line, ignoring rc [dirs]!\n");
-                return;
-            }
-
-            for my $line (@_) {
-                # Regex for dirs to ignore, then push to @IGNOREDIR
-                $line =~ m{\A\s* (.+) \s*\z}x
-                    or die qq{The line "$line" in a "ignore" section did not contain a valid path};
-                (my $path = $1) =~ s{(/)+\z}{}; # remove trailing slashes
-                debug_print("ignore: $path added from rc.\n");
-                push @IGNORE, $path;
-            }
-        },
-        github => sub {
-            my $name = shift;
-            my $repository = $REPOSITORIES{$name} or die "Unknown service $name";
-
-            for my $api (@_) {
-                say App::Watson::UI->warn(["The ", $repository->name, " API was already set, overwriting"])
-                    if defined $repository->access_token;
-
-                # No need for regex on API key
-                debug_print($repository->name . "API: $api\n");
-                $repository->access_token($api);
-            }
-        },
-        githubrepo => sub {
-            my $name = shift;
-            $name =~ s/repo\z//;
-            my $repository = $REPOSITORIES{$name} or die "Unknown service $name";
-
-            for my $repo (@_) {
-                say App::Watson::UI->warn(["The ", $repository->name, " Repo was already set, overwriting"])
-                    if defined $repository->repo;
-
-                # No need for regex on repo
-                debug_print($repository->name . "Repo: $repo\n");
-                $repository->repo($repo);
-            }
-
-            # If setting up remote, don't ask for password / do any remote stuff
-            # Won't need this when OAuth implemented but it does optimize the code...
-
-            # Get list of issues, also checks if API key is valid
-            $repository->fetch_issues unless $REMOTESETUP;
-        },
-    );
-    $actions{bitbucket}     = $actions{github};
-    $actions{bitbucketrepo} = $actions{githubrepo};
-
-    my $config = App::Watson::Configuration->new_from_file($RCNAME);
-
-    for my $section ($config->section_names) {
-        my $action = $actions{$section} or die qq/Unknown section "$section"/;
-        debug_print("[$section] contains [@{[$config->section($section)]}]\n");
-        $action->($section => $_) for @{ $config->section($section) };
-    }
-
-    return 1;
+    return App::Watson::Configuration->new_from_file($RCNAME)->parse;
 }
 
 
@@ -789,23 +806,24 @@ sub parse_config {
 ###########################################################
 
 # Start going through all files and subdirs of specified folder
-sub start_scan{
+sub start_scan {
+    my ($files, $directories) = @_;
 
     my @files_with_issues;
 
     # If files passed to command line, push those to structure
     # Have to populate structure this way to print properly
-    if ($IGNORE_RC{files}){
+    if ($IGNORE_RC{files}) {
         # For each file obtained from CL (if any) parse file
         # Create proper structure for files so we can push to @STRUCTURE
         push @files_with_issues, {
-            files => [ map { parse_file($_) } @FILES ],
+            files => [ map { parse_file($_) } @$files ],
         };
     }
 
     # For each directory obtained from rc or CL, look for files in them
     # This will always be valid, not condition like files above
-    push @files_with_issues, map { parse_directories($_) } @DIRS;
+    push @files_with_issues, map { parse_directories($_) } @$directories;
 
     print("\n");
     return @files_with_issues;
@@ -1011,7 +1029,10 @@ sub comment_regex {
 
 # Format the parsed file data and output it nicely
 sub create_report {
-    my (@entries) = @_;
+    my ($tags, @entries) = @_;
+
+    my $pwd  = Cwd::cwd();
+    my $time = localtime;
 
     my $fh;
     if (not system "which less > /dev/null 2>&1") {
@@ -1021,75 +1042,71 @@ sub create_report {
         $fh = \*STDOUT;
     }
 
-    my $pwd = Cwd::cwd();
-    my $time = localtime;
     say { $fh } App::Watson::UI->header("Run in: $pwd", "Run at: $time");
 
     # Display output for each file parsed
-    for my $entry (@entries){
-        print_results($fh, $entry);
+    for my $entry (@entries) {
+        say { $fh } $_ for directory_report($entry, $tags);
     }
+
+    close $fh if fd($fh) != fd(\*STDOUT);
 
     return 1;
 }
 
+sub directory_report {
+    my ($dir, $tags) = @_;
 
-###########################################################
-# Individual Result Printer
-###########################################################
+    my @report;
+    push @report, file_report(     $_, $tags) for @{ $dir->{files} };
+    push @report, directory_report($_, $tags) for @{ $dir->{dirs}  };
+    return @report;
+}
 
-# Print results from parsing all pretty and stuff
-sub print_results {
-    my ($fh, $entry) = @_;
-    # Go through and print info for all files first
-    for my $file_report (@{$entry->{files}}) {
+sub file_report {
+    my ($file, $tags) = @_;
 
-        # [fixme] - Same foreach performed below, combine somehow?
+    # Go through and see if there are any issues with given file
+    # Sets print color and whether to continue to print
+    my $issueflag = grep { 0 + @{$file->{$_}} } @$tags;
+    my $fancy_filename = UNDERLINE $file->{filename};
 
-        # Go through and see if there are any issues with given file
-        # Sets print color and whether to continue to print
-        my $issueflag = grep { 0 + @{$file_report->{$_}} } @TAGS;
-
-        # If there are no issues, don't print anything (go to next file)
-        # Else, continue on and print the issues
-        if (not $issueflag) {
-            say { $fh } App::Watson::UI->success(
-                UNDERLINE $file_report->{filename},
-            );
-            next;
-        }
-
-        say { $fh } "";
-        say { $fh } App::Watson::UI->error(UNDERLINE $file_report->{filename});
-
-        # Cycle through all tags and print issues for each
-        for my $tag (@TAGS) {
-            my @issues = @{$file_report->{$tag}} or next;
-
-            # Print tag, line #, and issue
-
-            my @lines;
-            for my $issue (@issues) {
-                # Check if issue has been closed on Github or Bitbucket, set to resolved
-                my @solved_on =
-                    map  { App::Watson::UI->tag(BOLD GREEN "Resolved on " . $_->name) }
-                    grep { $_->closed_issues->contains($issue->md5) }
-                    values %REPOSITORIES;
-
-                push @lines, [
-                    [RESET, WHITE "  line " . $issue->line, RESET],
-                    RESET, BOLD, $issue->comment, RESET, @solved_on,
-                ];
-            }
-            say { $fh } $_ for
-                App::Watson::UI->tag(BOLD BLUE $tag),
-                App::Watson::UI->details(@lines);
-        }
+    # If there are no issues, don't print anything (go to next file)
+    # Else, continue on and print the issues
+    if (not $issueflag) {
+        return App::Watson::UI->success($fancy_filename);
     }
 
-    print_results($fh, $_) for @{$entry->{dirs}};
+    my @report;
+    push @report,
+        q(),
+        App::Watson::UI->error($fancy_filename);
 
-    return 1;
+    # Cycle through all tags and print issues for each
+    for my $tag (@$tags) {
+        my @issues = @{$file->{$tag}} or next;
+
+        # Print tag, line #, and issue
+
+        my @lines;
+        for my $issue (@issues) {
+            # Check if issue has been closed on Github or Bitbucket, set to resolved
+            my @solved_on =
+                map  { App::Watson::UI->tag(BOLD GREEN "Resolved on " . $_->name) }
+                grep { $_->closed_issues->contains($issue->md5) }
+                values %REPOSITORIES;
+
+            push @lines, [
+                [RESET, WHITE "  line " . $issue->line, RESET],
+                RESET, BOLD, $issue->comment, RESET, @solved_on,
+            ];
+        }
+        push @report,
+            App::Watson::UI->tag(BOLD BLUE $tag),
+            App::Watson::UI->details(@lines);
+    }
+
+    return @report;
 }
 
 #####################
@@ -1898,7 +1915,7 @@ BEGIN {
         my ($self, $prompt, %kw_args) = @_;
 
         # printflush prints the data, then flushes immediately
-        STDIN->printflush(BOLD, _flatten($prompt), q( ), RESET);
+        STDOUT->printflush(BOLD, _flatten($prompt), q( ), RESET);
 
         system 'stty', '-echo' if $kw_args{silent};
         chomp(my $answer = <STDIN>);
