@@ -141,34 +141,6 @@ sub check_dir {
     return 1;
 }
 
-
-###########################################################
-# File checker
-###########################################################
-
-# check_file - checks if file can be opened
-# Different from just using -f, checks if able to OPEN
-sub check_file {
-    my ($file) = @_;
-
-    # Error check for input
-    if (not length $file) {
-        print("No file specified.\n");
-        return 0;
-    }
-
-    # Check if file can be opened
-    open my $tFILE, '<', $file or do {
-        say qq{Could not open "$file": $!};
-        return 0;
-    };
-
-    close $tFILE;
-    debug_print(qq{"$file" exists and opened successfully.\n});
-    return 1;
-}
-
-
 ###########################################################
 # Config file check
 ###########################################################
@@ -499,16 +471,21 @@ BEGIN {
             my ($file) = @_;
             App::Watson::debug_print("File Index: $file\n");
 
-            if (App::Watson::check_file($file)) {
-                App::Watson::debug_print("fileflag: {$file} valid file, added from CL.\n");
-
-                # If we ever get into this, means CL passed
-                # Set RC ignore so we don't look at rc
-                App::Watson::debug_print("Ignoring RC Files/Dirs\n\n");
-                $IGNORE_RC{files} = 1;
-
-                push @FILES, $file;
+            if (not -f $file) {
+                say App::Watson::UI->error(
+                    qq(The path "$file" does not seem to point to a valid file.)
+                );
+                exit 1;
             }
+
+            App::Watson::debug_print("fileflag: {$file} valid file, added from CL.\n");
+
+            # If we ever get into this, means CL passed
+            # Set RC ignore so we don't look at rc
+            App::Watson::debug_print("Ignoring RC Files/Dirs\n\n");
+            $IGNORE_RC{files} = 1;
+
+            push @FILES, $file;
         });
     }
 
@@ -907,9 +884,6 @@ sub parse_file {
     # [fixme] - need a better check for valid files (when using @_)
     my ($file) = @_;
     debug_print("parse_file: |$file|\n");
-
-    # Error check for input
-    return unless check_file($file);
 
     # Return unless the input is a text file
     return unless ( -T $file );
