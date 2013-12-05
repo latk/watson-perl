@@ -12,7 +12,7 @@ use warnings;
 use utf8;  # in Core since 5.006 -- define encoding of source code
 
 package App::Watson;
-use version; our $VERSION = qv("1.003_002"); # PAUSE hack
+use version; our $VERSION = qv("1.003_001"); # PAUSE hack
 
 our $COPYRIGHT = '2012-2013 goosecode labs';
 our $PROJECT_HOMEPAGE = 'http://goosecode.com/projects/watson';
@@ -351,7 +351,7 @@ BEGIN {
         App::Watson::debug_print("Version flag passed\n");
 
         say for
-            "watson v$App::Watson::VERSION",
+            "watson $App::Watson::VERSION UNSTABLE",
             "Copyright (c) $App::Watson::COPYRIGHT",
             "Licensed under MIT, see LICENSE for details",
             q(),
